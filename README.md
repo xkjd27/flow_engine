@@ -30,9 +30,9 @@ git submodule add https://github.com/xkjd27/flow_engine_lua rime/lua
 
 不用 git 的话，把这几个 `*.lua` 直接拷进 `<user>/lua/` 也行。
 
-引擎依赖 librime 部署时生成的 `build/<词库>.reverse.bin`（提示码的来源）+ 方案自带的
-`<词库>.danzi.dict.yaml` / `<词库>.shape.txt` / `<词库>.secondary.yaml`，所以挂好之后要
-跟着方案一起部署（方案仓库里那三个数据文件是随仓库发的，反查表由部署产生）。
+引擎只读方案自带的 `<词库>.danzi.dict.yaml` / `<词库>.shape.dict.yaml` /
+`<词库>.shape.txt` / `<词库>.secondary.yaml`（都随方案仓库一起发），不依赖部署产物；
+方案本身照常部署（`build/` 里的 table / prism 是 librime 匹配词表要用的）。
 
 ## 引擎读什么
 
@@ -44,10 +44,16 @@ git submodule add https://github.com/xkjd27/flow_engine_lua rime/lua
 | schema | `flow_order/backend`、`flow_order/name`、`flow_order/recent_max` | 调序库（leveldb / txt） |
 | schema | `flow_hint`、`flow_hint/shape`、`flow_hint/topup` | 提示与排序开关 |
 | schema | `flow_secondary` | 次简总开关 |
-| 数据（部署产物） | `build/<词库>.reverse.bin` | **码的唯一来源**：`flow_codes` 用 `ReverseDb` 打开它做「文字 → 码」；librime 部署时生成，删掉它就没提示码了 |
-| 数据（方案自带） | `<词库>.danzi.dict.yaml` | 单字读音权重，只用来给同一个字的多个码排序（反查表只给码不给权重） |
-| 数据（方案自带） | `<词库>.shape.txt` | 形码表（前 4 笔形，键位由 `shape_keys` 决定） |
+| 数据（方案自带） | `<词库>.danzi.dict.yaml` | **码和权重都来自这里**：`flow_codes` 启动时读一遍，建成「字 -> {码 = 权重}」（同一个字有多个读音码时按权重挑最重的） |
+| 数据（方案自带） | `<词库>.shape.dict.yaml` | 形码表，可选：补上 `乛 亻 扌` 这类只出现在形码表里的部件的码（没有它这些候选就没有提示码） |
+| 数据（方案自带） | `<词库>.shape.txt` | 形码筛选/提示用（前 4 笔形，键位由 `shape_keys` 决定） |
 | 数据（方案自带） | `<词库>.secondary.yaml` | 次简默认值（扁平「键: 值」）。不是 `.dict.yaml`、也不在 schema 里引用，所以 librime 不会拿它去编译词库 |
+
+**引擎不读反查表**：早先 `flow_codes` 用 `ReverseDb("build/<词库>.reverse.bin")` 取码、
+再读单字表取权重（10.2 ms + 20~40 ms，常驻 8.6 MB + 1.6 MB）；现在只读单字表
+（+形码表）一遍建表：**~21-23 ms / ~1.6 MB**，4868 个字全部有码，且与「上游 + 反查表」
+的输出逐字一致（两套方案各 4000 条 parity）。方案自己仍然需要部署（词表 / prism 是
+方案匹配要用的），但引擎不再依赖那个 7 MB 的反查表。
 
 方案自带的三个数据文件按「词库全名 → 去掉变体后缀的基础名（`xkjd27c_flow.ice` →
 `xkjd27c_flow`）」在**用户目录、共享目录**里依次查找。
@@ -68,7 +74,9 @@ git submodule add https://github.com/xkjd27/flow_engine_lua rime/lua
 | `flow_shape.lua` | 形码键处理器、造词模式按键、Tab 次简、`-`/`=` 调序、顶功 |
 | `flow_order.lua` | 调序/造词的存储（leveldb / txt） |
 | `flow_create.lua` | 造词模式 |
-| `flow_secondary.lua` | 次简表（默认值 + 用户学习） |
+| `flow_secondary.lua` | 次简表（默认值读 `<词库>.secondary.yaml`，用户学习存 order） |
+| `tools/smoke.lua` | 不依赖 librime 的隔离/回归测试（两方案同一 Lua state 各用各的数据） |
+| `tools/bench_lookup.lua` | 「字典 vs 二分」查表结构对比（结论：字典快 19×、内存相当，所以用字典） |
 
 ## 冒烟测试（不需要 librime）
 

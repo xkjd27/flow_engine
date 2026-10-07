@@ -6,9 +6,11 @@
 --   * 5+ 字：前三首 + 末一首
 -- 推导结果只用来给候选显示提示键，不参与候选匹配。
 --
--- 单字码来自反查表 build/<词库>.reverse.bin（librime 部署时一定会生成）；
--- 读音权重来自单字表 <词库>.danzi.dict.yaml —— 反查表只给码不给权重，
--- 顺序也不可靠（了 -> l,lc,lf），低权重读音会让提示指错。
+-- 单字码和读音权重都来自方案自带的单字表 <词库>.danzi.dict.yaml；
+-- 再补上形码表 <词库>.shape.dict.yaml 里的条目（乛 亻 扌 这类只出现在
+-- 形码表里的部件，词库里没有单字条目，少了它们这些候选就没提示码）。
+-- 单字表的顺序不可靠（了 -> l,lc,lf），低权重读音会让提示指错 —— 所以按
+-- 权重挑最重的读音补全。
 --
 -- 每个方案（schema_id）各自一份状态：见 flow_env.lua。
 
@@ -17,7 +19,9 @@ local flow_env = require("flow_env")
 local M = {}
 
 local function state(ctx)
-    return flow_env.cache(ctx, "codes")
+    return flow_env.cache(ctx, "codes",
+                          { char_cache = {}, word_cache = {}, codes = {},
+                            ready = false })
 end
 
 local function utf8_chars(text)
@@ -28,29 +32,40 @@ local function utf8_chars(text)
     return chars
 end
 
--- 读单字表的「字/读音码/权重」（只用于给码排权重）
-local function load_code_weight(st, ctx)
-    local buf = flow_env.read(ctx, ".danzi.dict.yaml")
+-- 读单字表 / 形码表，建「字 -> {码 = 权重}」（同码取最大权重）
+-- 整块读 + 一遍 gmatch：逐行 io.lines + 每行 match 要慢一倍
+local function add_table(st, ctx, suffix, optional)
+    local buf = flow_env.read(ctx, suffix)
     if not buf then
-        if log and log.warning then
-            log.warning("flow_codes: 读不到单字表 " ..
-                        tostring(flow_env.base_name(ctx.dict)) ..
-                        ".danzi.dict.yaml（提示只有码没有权重）")
+        if not optional and log and log.warning then
+            log.warning("flow_codes: 读不到 " ..
+                        tostring(flow_env.base_name(ctx.dict)) .. suffix ..
+                        "（所有单字都没有提示码）")
         end
-        return
+        return false
     end
-    -- 整块读 + 一遍 gmatch：逐行 io.lines + 每行 match 要慢一倍
     for ch, code, w in buf:gmatch("([^\t\n]+)\t([^\t\n]+)\t([%d%.]+)\n") do
-        local t = st.weights[ch]
+        local t = st.codes[ch]
         if not t then
             t = {}
-            st.weights[ch] = t
+            st.codes[ch] = t
         end
         local n = tonumber(w) or 0
         if n > (t[code] or -1) then
             t[code] = n
         end
     end
+    return true
+end
+
+local function load_tables(st, ctx)
+    local ok = add_table(st, ctx, ".danzi.dict.yaml", false)
+    if not ok then
+        return false
+    end
+    -- 形码表是可选的：没有就少一批笔画/部首部件的码
+    add_table(st, ctx, ".shape.dict.yaml", true)
+    return true
 end
 
 function M.init(ctx)
@@ -58,24 +73,16 @@ function M.init(ctx)
     if st and st.ready then
         return true
     end
-    st = { char_cache = {}, word_cache = {}, weights = {}, ready = false }
+    st = { char_cache = {}, word_cache = {}, codes = {}, ready = false }
     ctx.codes = st
     flow_env.cache(ctx, "codes", st)
-    local dict = ctx.dict
-    if not dict then
+    if not ctx.dict then
         log.warning("flow_codes: schema 里没有 translator/dictionary")
         return false
     end
-    local db
-    if ReverseDb then
-        db = ReverseDb("build/" .. dict .. ".reverse.bin")
-    end
-    if not db then
-        log.warning("flow_codes: 打不开反查表 build/" .. dict .. ".reverse.bin")
+    if not load_tables(st, ctx) then
         return false
     end
-    st.reverse = db
-    load_code_weight(st, ctx)
     st.ready = true
     return true
 end
@@ -88,13 +95,11 @@ local function char_entries(ctx, ch)
         return cached
     end
     local list = {}
-    local s = (st.reverse and st.reverse:lookup(ch)) or ""
-    local weights = st.weights[ch]
-    for code in s:gmatch("%S+") do
-        list[#list + 1] = {
-            code = code,
-            w = (weights and weights[code]) or 0,
-        }
+    local codes_of = st.codes[ch]
+    if codes_of then
+        for code, w in pairs(codes_of) do
+            list[#list + 1] = { code = code, w = w }
+        end
     end
     table.sort(list, function(a, b)
         if a.w ~= b.w then
