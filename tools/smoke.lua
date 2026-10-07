@@ -64,14 +64,16 @@ _G.ReverseDb = function(file)
     }
 end
 
--- 假的 env（只需要 schema 配置和 schema_id）
-local function make_env()
+-- 假的 env（只需要 schema 配置和 schema_id）。
+-- 注意：键值要绑进闭包——真 librime 里每个方案的 config 是独立的，
+-- 用全局变量会让「切到 B 之后 A 的 config 也返回 B 的值」，那是测试自己的 bug。
+local function make_env(conf)
     local config = {
         get_string = function(_, key)
-            if key == "translator/dictionary" then return scheme.dict end
-            if key == "schema/schema_id" then return scheme.schema_id end
-            if key == "flow_engine/sound_keys" then return scheme.sound end
-            if key == "flow_engine/shape_keys" then return scheme.shape end
+            if key == "translator/dictionary" then return conf.dict end
+            if key == "schema/schema_id" then return conf.schema_id end
+            if key == "flow_engine/sound_keys" then return conf.sound end
+            if key == "flow_engine/shape_keys" then return conf.shape end
             return nil
         end,
         get_bool = function() return nil end,
@@ -79,7 +81,7 @@ local function make_env()
     }
     return {
         engine = {
-            schema = { schema_id = scheme.schema_id, config = config },
+            schema = { schema_id = conf.schema_id, config = config },
             context = {},
         },
         name_space = "smoke",
@@ -100,7 +102,8 @@ local secondary = require("flow_secondary")
 
 local function init_one(dir, dict, schema_id, sound, shape)
     set_scheme(dir, dict, schema_id, sound, shape)
-    local env = make_env()
+    local env = make_env({ dict = dict, schema_id = schema_id,
+                           sound = sound, shape = shape })
     local flow = flow_env.ctx(env)
     assert(codes.init(env), schema_id .. ": codes.init 失败")
     assert(shapes.init(env), schema_id .. ": shapes.init 失败")
