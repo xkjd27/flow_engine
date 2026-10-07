@@ -220,9 +220,4 @@ function M.is_scheme_code(ctx, text, code)
     return false
 end
 
--- 某个候选词需要的码（给 flow_filter 排序用），带缓存
-function M.codes_of(ctx, text)
-    return build_codes(ctx, text)
-end
-
 return M

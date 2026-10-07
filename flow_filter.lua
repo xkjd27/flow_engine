@@ -488,7 +488,6 @@ local function init(env)
     order.init(env)
     codes.init(env)
     st.ready = shapes.init(env)
-    secondary.init(env)
     -- flow_hint 支持两种写法：
     --   flow_hint: false                -- 总开关（提示 + 排序都关）
     --   flow_hint:\n    shape: false   -- 笔码提示

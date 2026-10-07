@@ -94,10 +94,4 @@ function M.match(ctx, text, shape)
     return exp:sub(1, #shape) == shape
 end
 
--- 形码表里有没有这个字（纯笔码提示要判断）
-function M.known(ctx, char)
-    local st = state(ctx)
-    return st.shapes[char] ~= nil
-end
-
 return M

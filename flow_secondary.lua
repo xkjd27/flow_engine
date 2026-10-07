@@ -50,11 +50,10 @@ function M.enabled(flow)
     return state(flow).enabled
 end
 
-local function key_of(code)
-    return code and code:sub(1, 1) or ""
-end
-
 -- 该码的次简；nil = 没有（功能关掉 / 用户显式取消 / 表里没有 / 键位不属于本方案）
+-- 默认表按**完整码**查（和上游一致：例 z 命中，zto 不命中；用户覆盖同理），
+-- 只是多一步「首键必须属于本方案的声母键」——两套方案的默认表合并成了一张，
+-- 不过滤的话 27C 会命中 27 的 e 行。
 function M.get(flow, code)
     if not state(flow).enabled then
         return nil
@@ -66,11 +65,15 @@ function M.get(flow, code)
         end
         return override
     end
-    local key = key_of(code)
+    local d = M.defaults[code]
+    if d == nil then
+        return nil
+    end
+    local key = code:sub(1, 1)
     if not flow_env.sound_keys(flow):find(key, 1, true) then
         return nil
     end
-    return M.defaults[key]
+    return d
 end
 
 -- 记一条（Tab 学习 / 用户覆盖；功能关掉时不写）

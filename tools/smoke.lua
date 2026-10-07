@@ -96,6 +96,7 @@ end
 local flow_env = require("flow_env")
 local codes = require("flow_codes")
 local shapes = require("flow_shapes")
+local secondary = require("flow_secondary")
 
 local function init_one(dir, dict, schema_id, sound, shape)
     set_scheme(dir, dict, schema_id, sound, shape)
@@ -162,6 +163,14 @@ print("    A 的 实 = " .. tostring(a_shi2) .. " ｜ B 的 实 = " .. tostring(
 check("A/B 的「实」首键分别落在自己方案的键位上",
       a_shi2 ~= nil and b_shi2 ~= nil and a_shi2 ~= b_shi2,
       a_shi2 .. " vs " .. b_shi2)
+
+-- 4b. 次简默认表：两套方案合并成一张，靠「首键属于本方案声母键」区分
+local a_sec = secondary.get(flow_a, "u")
+local b_sec_u = secondary.get(flow_b, "u")
+local b_sec_e = secondary.get(flow_b, "e")
+check("A 的 u 次简 = 实", a_sec == "实", a_sec)
+check("B 的 u 不是次简（u 是 B 的笔形键）", b_sec_u == nil, b_sec_u)
+check("B 的 e 次简 = 实", b_sec_e == "实", b_sec_e)
 
 -- 5. 形码表也各用各的
 local sa = shapes.expected(flow_a, "水饺")
