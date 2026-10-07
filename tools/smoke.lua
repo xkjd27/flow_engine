@@ -107,7 +107,28 @@ local function init_one(dir, dict, schema_id, sound, shape)
     local flow = flow_env.attach(env)     -- 和组件 init 一样
     assert(codes.init(flow), schema_id .. ": codes.init 失败")
     assert(shapes.init(flow), schema_id .. ": shapes.init 失败")
+    assert(secondary.init(flow), schema_id .. ": secondary.init 失败")
     return flow
+end
+
+-- 读方案自带的次简数据文件（只用来断言「引擎读的确实是这个文件」）
+local function file_secondary(dir, dict)
+    local base = dict:match("^(.-)%.[^%.]+$") or dict
+    local f = io.open(dir .. "/" .. base .. ".secondary.yaml")
+    if not f then
+        return nil
+    end
+    local out = {}
+    for line in f:lines() do
+        if line:sub(1, 1) ~= "#" then
+            local k, v = line:match("^%s*([^#%s:]+)%s*:%s*(.-)%s*$")
+            if k and v and v ~= "" then
+                out[k] = v
+            end
+        end
+    end
+    f:close()
+    return out
 end
 
 local A_DIR = arg[1]
@@ -174,6 +195,15 @@ local b_sec_e = secondary.get(flow_b, "e")
 check("A 的 u 次简 = 实", a_sec == "实", a_sec)
 check("B 的 u 不是次简（u 是 B 的笔形键）", b_sec_u == nil, b_sec_u)
 check("B 的 e 次简 = 实", b_sec_e == "实", b_sec_e)
+
+-- 4c. 默认次简表来自方案自己的 <词库>.secondary.yaml
+local a_file = file_secondary(A_DIR, A_DICT)
+if a_file and a_file["z"] then
+    check("A 的 z 次简 = 数据文件里的值", secondary.get(flow_a, "z") == a_file["z"],
+          tostring(secondary.get(flow_a, "z")) .. " vs " .. a_file["z"])
+else
+    print("    （" .. A_DIR .. " 没有 .secondary.yaml，跳过数据文件断言）")
+end
 
 -- 5. 形码表也各用各的
 local sa = shapes.expected(flow_a, "水饺")

@@ -113,17 +113,32 @@ function M.paths(ctx, suffix)
     return paths
 end
 
--- 读数据文件（整块读，找不到返回 nil）
-function M.read(ctx, suffix)
+-- 找数据文件，返回第一个存在的路径（找不到返回 nil）
+function M.find(ctx, suffix)
     for _, path in ipairs(M.paths(ctx, suffix)) do
         local f = io.open(path, "r")
         if f then
-            local buf = f:read("a")
             f:close()
-            if buf then
-                return buf, path
-            end
+            return path
         end
+    end
+    return nil
+end
+
+-- 读数据文件（整块读，找不到返回 nil）
+function M.read(ctx, suffix)
+    local path = M.find(ctx, suffix)
+    if not path then
+        return nil
+    end
+    local f = io.open(path, "r")
+    if not f then
+        return nil
+    end
+    local buf = f:read("a")
+    f:close()
+    if buf then
+        return buf, path
     end
     return nil
 end

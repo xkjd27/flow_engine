@@ -19,21 +19,60 @@ local order = require("flow_order")
 
 local M = {}
 
-M.defaults = {
+-- 兜底默认表：只在方案没带 <词库>.secondary.yaml 时用（老安装）。
+-- 两套方案的默认表只差一个键（27C 是 u，27 是 e），这里两行都留着，
+-- 查的时候用本方案的声母键过滤。
+local FALLBACK = {
     b = "吧", d = "打", f = "发", h = "嘿", j = "及", l = "啦", m = "嘛",
     n = "哪", q = "期", t = "挺", w = "玩", x = "嗯", y = "重", z = "咱",
     u = "实", e = "实",
 }
 
 local function state(flow)
-    return flow_env.cache(flow, "secondary", { enabled = true })
+    return flow_env.cache(flow, "secondary",
+                          { enabled = true, defaults = {}, loaded = false })
 end
 
--- 读配置（由 flow_shape / flow_filter 的 init 调用）；总开关
+-- 次简默认值来自方案自带的 <词库>.secondary.yaml（扁平「键: 值」，
+-- # 开头是注释；不是 .dict.yaml，也不在 schema 里引用，所以 librime 不会拿它
+-- 去编译词库）。读不到就用兜底表。
+local function load_defaults(flow)
+    local st = state(flow)
+    st.defaults = {}
+    local buf, path = flow_env.read(flow, ".secondary.yaml")
+    if not buf then
+        for k, v in pairs(FALLBACK) do
+            st.defaults[k] = v
+        end
+        if log and log.warning then
+            log.warning("flow_secondary: 读不到 " ..
+                        tostring(flow_env.base_name(flow.dict)) ..
+                        ".secondary.yaml，用内置兜底表")
+        end
+        return
+    end
+    for line in buf:gmatch("[^\n]+") do
+        if line:sub(1, 1) ~= "#" then
+            local key, value = line:match("^%s*([^#%s:]+)%s*:%s*(.-)%s*$")
+            if key and value and value ~= "" and value ~= '""' then
+                st.defaults[key] = value
+            end
+        end
+    end
+    if log and log.info then
+        log.info("flow_secondary: 默认次简来自 " .. tostring(path))
+    end
+end
+
+-- 读配置（由 flow_shape 的 init 调用）；总开关
 -- flow_secondary: false 时整块关掉（Tab 处理、次简候选、学习），
 -- 已经存下的 ~secondary 数据保留，重新打开就恢复。
 function M.init(flow)
     local st = state(flow)
+    if not st.loaded then
+        load_defaults(flow)
+        st.loaded = true
+    end
     if flow.config then
         local ok, v = pcall(function()
             return flow.config:get_bool("flow_secondary")
@@ -51,8 +90,8 @@ end
 
 -- 该码的次简；nil = 没有（功能关掉 / 用户显式取消 / 表里没有 / 键位不属于本方案）
 -- 默认表按**完整码**查（和上游一致：例 z 命中，zto 不命中；用户覆盖同理），
--- 只是多一步「首键必须属于本方案的声母键」——两套方案的默认表合并成了一张，
--- 不过滤的话 27C 会命中 27 的 e 行。
+-- 只是多一步「首键必须属于本方案的声母键」：数据文件写错方案（或走兜底表）时
+-- 不会把另一个方案的键位放进来。
 function M.get(flow, code)
     if not state(flow).enabled then
         return nil
@@ -64,7 +103,7 @@ function M.get(flow, code)
         end
         return override
     end
-    local d = M.defaults[code]
+    local d = state(flow).defaults[code]
     if d == nil then
         return nil
     end
