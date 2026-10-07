@@ -30,6 +30,10 @@ git submodule add https://github.com/xkjd27/flow_engine_lua rime/lua
 
 不用 git 的话，把这几个 `*.lua` 直接拷进 `<user>/lua/` 也行。
 
+引擎依赖 librime 部署时生成的 `build/<词库>.reverse.bin`（提示码的来源）+ 方案自带的
+`<词库>.danzi.dict.yaml` / `<词库>.shape.txt` / `<词库>.secondary.yaml`，所以挂好之后要
+跟着方案一起部署（方案仓库里那三个数据文件是随仓库发的，反查表由部署产生）。
+
 ## 引擎读什么
 
 | 来源 | 键 / 文件 | 说明 |
@@ -40,14 +44,18 @@ git submodule add https://github.com/xkjd27/flow_engine_lua rime/lua
 | schema | `flow_order/backend`、`flow_order/name`、`flow_order/recent_max` | 调序库（leveldb / txt） |
 | schema | `flow_hint`、`flow_hint/shape`、`flow_hint/topup` | 提示与排序开关 |
 | schema | `flow_secondary` | 次简总开关 |
-| 数据 | `<词库>.danzi.dict.yaml` | 单字表（读音权重） |
-| 数据 | `<词库>.shape.txt` | 形码表 |
+| 数据（部署产物） | `build/<词库>.reverse.bin` | **码的唯一来源**：`flow_codes` 用 `ReverseDb` 打开它做「文字 → 码」；librime 部署时生成，删掉它就没提示码了 |
+| 数据（方案自带） | `<词库>.danzi.dict.yaml` | 单字读音权重，只用来给同一个字的多个码排序（反查表只给码不给权重） |
+| 数据（方案自带） | `<词库>.shape.txt` | 形码表（前 4 笔形，键位由 `shape_keys` 决定） |
+| 数据（方案自带） | `<词库>.secondary.yaml` | 次简默认值（扁平「键: 值」）。不是 `.dict.yaml`、也不在 schema 里引用，所以 librime 不会拿它去编译词库 |
 
-数据文件按「词库全名 → 去掉变体后缀的基础名（`xkjd27c_flow.ice` → `xkjd27c_flow`）」
-在**用户目录、共享目录**里依次查找。
+方案自带的三个数据文件按「词库全名 → 去掉变体后缀的基础名（`xkjd27c_flow.ice` →
+`xkjd27c_flow`）」在**用户目录、共享目录**里依次查找。
 
-**两套方案的全部差异就是 `sound_keys` / `shape_keys` 和这两个数据文件**，引擎里没有
-任何硬编码的方案名或键位（`flow_env.lua` 里只有读不到配置时的默认值 + 告警）。
+**两套方案的全部差异就是 `sound_keys` / `shape_keys`（schema）+ 这三个数据文件**（反查表
+是部署产物，由各自词库编译出来）。引擎里没有任何硬编码的方案名、键位或默认数据：
+`flow_engine/*` 缺任何一项就不启用（组件 early return，只打一条 error），数据文件缺了
+就没有对应的功能（默认次简为空、提示没有权重……）并打 warning。
 
 ## 文件
 
