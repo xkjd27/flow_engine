@@ -20,7 +20,7 @@ git clone --recurse-submodules https://github.com/xkjd27/rime_jd27_flow
 | `flow_engine/sound_keys` | 声母键，如 `bcdfghjklmnpqrstuwxyz;` |
 | `flow_engine/shape_keys` | 笔形键，如 `aeiov` |
 | `flow_order/backend` | 调序库后端：`leveldb`（默认）/ `txt` |
-| `flow_order/name` | 调序库名，如 `xkjd27c_flow.order` |
+| `flow_order/name` | 调序库名，默认 `<词库>.order`（如 `xkjd27c_flow.ice.order`） |
 | `flow_order/recent_max` | 最近造词列表上限 |
 | `flow_hint` | 候选提示总开关 |
 | `flow_hint/shape` | 笔形提示 |
