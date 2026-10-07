@@ -453,6 +453,9 @@ end
 
 local function init(env)
     local flow = flow_env.attach(env)
+    if not flow then
+        return            -- 方案没配 flow_engine/*：引擎不启用
+    end
     order.init(flow)
     shapes.init(flow)
     codes.init(flow)

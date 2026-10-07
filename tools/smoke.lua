@@ -188,28 +188,35 @@ check("A/B 的「实」首键分别落在自己方案的键位上",
       a_shi2 ~= nil and b_shi2 ~= nil and a_shi2 ~= b_shi2,
       a_shi2 .. " vs " .. b_shi2)
 
--- 4b. 次简默认表：两套方案合并成一张，靠「首键属于本方案声母键」区分
+-- 4b. 默认次简一律来自方案自带的 <词库>.secondary.yaml（引擎里没有内置表）
+local a_file = file_secondary(A_DIR, A_DICT)
+local b_file = file_secondary(B_DIR, B_DICT)
 local a_sec = secondary.get(flow_a, "u")
 local b_sec_u = secondary.get(flow_b, "u")
 local b_sec_e = secondary.get(flow_b, "e")
-check("A 的 u 次简 = 实", a_sec == "实", a_sec)
-check("B 的 u 不是次简（u 是 B 的笔形键）", b_sec_u == nil, b_sec_u)
-check("B 的 e 次简 = 实", b_sec_e == "实", b_sec_e)
-
--- 4c. 默认次简表来自方案自己的 <词库>.secondary.yaml
-local a_file = file_secondary(A_DIR, A_DICT)
-if a_file and a_file["z"] then
+if a_file and b_file then
+    check("A 的 u 次简 = 数据文件里的值", a_sec == a_file["u"],
+          tostring(a_sec) .. " vs " .. tostring(a_file["u"]))
     check("A 的 z 次简 = 数据文件里的值", secondary.get(flow_a, "z") == a_file["z"],
-          tostring(secondary.get(flow_a, "z")) .. " vs " .. a_file["z"])
+          tostring(secondary.get(flow_a, "z")) .. " vs " .. tostring(a_file["z"]))
+    check("B 的 e 次简 = 数据文件里的值", b_sec_e == b_file["e"],
+          tostring(b_sec_e) .. " vs " .. tostring(b_file["e"]))
 else
-    print("    （" .. A_DIR .. " 没有 .secondary.yaml，跳过数据文件断言）")
+    print("    （方案目录没有 .secondary.yaml：默认次简应为空）")
+    check("没有数据文件时默认次简为空", a_sec == nil and b_sec_e == nil,
+          tostring(a_sec) .. " / " .. tostring(b_sec_e))
 end
+check("B 的 u 不是次简（u 是 B 的笔形键）", b_sec_u == nil, b_sec_u)
 
 -- 5. 形码表也各用各的
 local sa = shapes.expected(flow_a, "水饺")
 local sb = shapes.expected(flow_b, "水饺")
 print("    A 的 水饺 形码 = " .. tostring(sa) .. " ｜ B = " .. tostring(sb))
 check("两个方案的形码表都读到了", sa ~= nil and sb ~= nil)
+
+-- 6. 方案没配 flow_engine/*：引擎不启用（attach 返回 nil，组件那边 early return）
+local bare = make_env({ dict = A_DICT, schema_id = "bare_scheme" })
+check("缺 flow_engine/* 时不启用", flow_env.attach(bare) == nil, "attach 没返回 nil")
 
 print("")
 if fails == 0 then

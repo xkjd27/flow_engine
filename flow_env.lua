@@ -179,8 +179,19 @@ end
 -- 组件 init 用：把本方案的 ctx 存进 env.flow，并记一次引用。
 -- librime-lua 每个组件实例一个 env（init / fini / 每次调用拿到同一个），
 -- 所以状态挂 env 上就好，不必每次按 schema_id 去查。
+-- 方案没配齐（词库名 / 声母键 / 笔形键）时不设 env.flow：组件那边会
+-- early return（filter 放行候选、processor 不处理按键），不半开半不开。
 function M.attach(env)
     local flow = M.ctx(env)
+    if not flow.dict then
+        if log and log.error then
+            log.error("flow_env: schema 里没有 translator/dictionary，引擎不启用")
+        end
+        return nil
+    end
+    if not (M.sound_keys(flow) and M.shape_keys(flow)) then
+        return nil
+    end
     env.flow = flow
     flow.users = flow.users + 1
     return flow
@@ -229,45 +240,40 @@ end
 -- 键位表 ---------------------------------------------------------------
 
 -- 键位表 ---------------------------------------------------------------
--- 两套方案只差这两个字母表，直接写进各自的 schema：
+-- 每个方案必须在自己的 schema 里写清楚，引擎不留任何内置默认值
+-- （留一份就等于偏心某个方案）：
 --   flow_engine:
 --     sound_keys: "bcdfghjklmnpqrstuwxyz;"   # 声母键
 --     shape_keys: "aeiov"                     # 笔形键
--- 读不到就用默认值并告警（旧部署副本里没有这段配置时）。
+-- 缺了就当作「这个方案没打算用本引擎」：不启用（见 attach），只打一条 error。
 
-local DEFAULT_SOUND_KEYS = "bcdfghjklmnpqrstuwxyz;"
-local DEFAULT_SHAPE_KEYS = "aeiov"
-
-function M.shape_keys(ctx)
-    local keys = get_str(ctx.config, "flow_engine/shape_keys", nil)
-    if not keys then
-        if log and log.warning then
-            log.warning("flow_env: schema 里没有 flow_engine/shape_keys，"
-                        .. "用默认笔形键 " .. DEFAULT_SHAPE_KEYS)
-        end
-        keys = DEFAULT_SHAPE_KEYS
+local function required_keys(ctx, path, what)
+    local keys = get_str(ctx.config, path, nil)
+    if not keys and log and log.error then
+        log.error("flow_env: schema 里没有 " .. path .. "（" .. what
+                  .. "），引擎不启用")
     end
     return keys
+end
+
+function M.shape_keys(ctx)
+    return required_keys(ctx, "flow_engine/shape_keys", "笔形键")
 end
 
 function M.sound_keys(ctx)
-    local keys = get_str(ctx.config, "flow_engine/sound_keys", nil)
-    if not keys then
-        if log and log.warning then
-            log.warning("flow_env: schema 里没有 flow_engine/sound_keys，"
-                        .. "用默认声母键 " .. DEFAULT_SOUND_KEYS)
-        end
-        keys = DEFAULT_SOUND_KEYS
-    end
-    return keys
+    return required_keys(ctx, "flow_engine/sound_keys", "声母键")
 end
 
--- 输入串是否「只有笔形键」（纯笔码）
+-- 输入串是否「只有笔形键」（纯笔码）；键位没配就当不是
 function M.is_shape_input(ctx, s)
     if not s or s == "" then
         return false
     end
-    return s:match("^[" .. M.shape_keys(ctx) .. "]+$") ~= nil
+    local keys = M.shape_keys(ctx)
+    if not keys then
+        return false
+    end
+    return s:match("^[" .. keys .. "]+$") ~= nil
 end
 
 return M

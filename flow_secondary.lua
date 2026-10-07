@@ -19,14 +19,9 @@ local order = require("flow_order")
 
 local M = {}
 
--- 兜底默认表：只在方案没带 <词库>.secondary.yaml 时用（老安装）。
--- 两套方案的默认表只差一个键（27C 是 u，27 是 e），这里两行都留着，
--- 查的时候用本方案的声母键过滤。
-local FALLBACK = {
-    b = "吧", d = "打", f = "发", h = "嘿", j = "及", l = "啦", m = "嘛",
-    n = "哪", q = "期", t = "挺", w = "玩", x = "嗯", y = "重", z = "咱",
-    u = "实", e = "实",
-}
+-- 默认次简表不放内置数据：一律读方案自带的 <词库>.secondary.yaml，
+-- 没有就当作没有默认值（用户 Tab 学习到的仍然生效）。
+-- （内置一份就等于偏心某个方案。）
 
 local function state(flow)
     return flow_env.cache(flow, "secondary",
@@ -41,13 +36,10 @@ local function load_defaults(flow)
     st.defaults = {}
     local buf, path = flow_env.read(flow, ".secondary.yaml")
     if not buf then
-        for k, v in pairs(FALLBACK) do
-            st.defaults[k] = v
-        end
         if log and log.warning then
             log.warning("flow_secondary: 读不到 " ..
                         tostring(flow_env.base_name(flow.dict)) ..
-                        ".secondary.yaml，用内置兜底表")
+                        ".secondary.yaml，没有默认次简（学过的仍然生效）")
         end
         return
     end
