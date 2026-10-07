@@ -53,8 +53,7 @@ local function load_code_weight(st, ctx)
     end
 end
 
-function M.init(env)
-    local ctx = flow_env.ctx(env)
+function M.init(ctx)
     local st = ctx.codes
     if st and st.ready then
         return true

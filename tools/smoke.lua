@@ -104,9 +104,9 @@ local function init_one(dir, dict, schema_id, sound, shape)
     set_scheme(dir, dict, schema_id, sound, shape)
     local env = make_env({ dict = dict, schema_id = schema_id,
                            sound = sound, shape = shape })
-    local flow = flow_env.ctx(env)
-    assert(codes.init(env), schema_id .. ": codes.init 失败")
-    assert(shapes.init(env), schema_id .. ": shapes.init 失败")
+    local flow = flow_env.attach(env)     -- 和组件 init 一样
+    assert(codes.init(flow), schema_id .. ": codes.init 失败")
+    assert(shapes.init(flow), schema_id .. ": shapes.init 失败")
     return flow
 end
 

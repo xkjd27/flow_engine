@@ -220,7 +220,10 @@ local function lower_or_extend(flow, ctx)
 end
 
 local function processor(key_event, env)
-    local flow = flow_env.ctx(env)
+    local flow = flow_env.of(env)
+    if not flow then                     -- init 没成功：不处理按键
+        return 2
+    end
     if key_event:release() or key_event:ctrl() or key_event:alt() then
         return 2
     end
@@ -449,11 +452,11 @@ local function processor(key_event, env)
 end
 
 local function init(env)
-    local flow = flow_env.hold(env)
-    order.init(env)
-    shapes.init(env)
-    codes.init(env)
-    secondary.init(env)
+    local flow = flow_env.attach(env)
+    order.init(flow)
+    shapes.init(flow)
+    codes.init(flow)
+    secondary.init(flow)
     env.flow_shape_conn = env.engine.context.commit_notifier:connect(
         function(ctx)
             ctx:set_property(PROP, "")
@@ -465,7 +468,10 @@ end
 -- 少了这里 order.userdb 的 LOCK 直到进程退出都不会释放
 -- （schema 切换 / 引擎销毁时就会一直占着）。先关库，再放掉方案引用。
 local function fini(env)
-    local flow = flow_env.ctx(env)
+    local flow = flow_env.of(env)
+    if not flow then
+        return
+    end
     if env.flow_shape_conn then
         env.flow_shape_conn:disconnect()
         env.flow_shape_conn = nil

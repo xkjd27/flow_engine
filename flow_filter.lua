@@ -197,7 +197,13 @@ local function apply_hint(flow, cand, input, shape, base, excluded, current_top,
 end
 
 local function filter(translation, env)
-    local flow = flow_env.ctx(env)
+    local flow = flow_env.of(env)
+    if not flow then                     -- init 没成功：原样放行，别拦候选
+        for cand in translation:iter() do
+            yield(cand)
+        end
+        return
+    end
     local st = state(flow)
     if not st.ready then
         for cand in translation:iter() do
@@ -483,11 +489,11 @@ local function tags_match(segment, env)
 end
 
 local function init(env)
-    local flow = flow_env.hold(env)
+    local flow = flow_env.attach(env)
     local st = state(flow)
-    order.init(env)
-    codes.init(env)
-    st.ready = shapes.init(env)
+    order.init(flow)
+    codes.init(flow)
+    st.ready = shapes.init(flow)
     -- flow_hint 支持两种写法：
     --   flow_hint: false                -- 总开关（提示 + 排序都关）
     --   flow_hint:\n    shape: false   -- 笔码提示
@@ -514,7 +520,10 @@ end
 -- 都不会释放（schema 切换 / 引擎销毁时就会一直占着）。
 -- 顺序：先关库，再放掉本方案的引用计数（计数到 0 时 flow_env 会清缓存）。
 local function fini(env)
-    local flow = flow_env.ctx(env)
+    local flow = flow_env.of(env)
+    if not flow then
+        return
+    end
     order.close(flow)
     flow_env.release(env)
 end

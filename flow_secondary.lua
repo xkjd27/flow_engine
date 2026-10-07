@@ -32,8 +32,7 @@ end
 -- 读配置（由 flow_shape / flow_filter 的 init 调用）；总开关
 -- flow_secondary: false 时整块关掉（Tab 处理、次简候选、学习），
 -- 已经存下的 ~secondary 数据保留，重新打开就恢复。
-function M.init(env)
-    local flow = flow_env.ctx(env)
+function M.init(flow)
     local st = state(flow)
     if flow.config then
         local ok, v = pcall(function()

@@ -14,8 +14,7 @@ local function state(ctx)
                           { shapes = {}, expected_cache = {}, ready = false })
 end
 
-function M.init(env)
-    local ctx = flow_env.ctx(env)
+function M.init(ctx)
     local st = state(ctx)
     if st.ready then
         return true

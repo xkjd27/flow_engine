@@ -194,8 +194,7 @@ end
 
 -- ---------------- 公共接口 ----------------
 
-function M.init(env)
-    local flow = flow_env.ctx(env)
+function M.init(flow)
     local st = state(flow)
     st.users = st.users + 1
     if st.ready then

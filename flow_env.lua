@@ -15,8 +15,7 @@
 
 local M = {}
 
-local contexts = {}   -- schema_id -> ctx
-local current = nil   -- 当前调用所属的 ctx；librime 单线程，调用不会跨方案嵌套
+local contexts = {}   -- schema_id -> ctx（同一方案的两个组件共用一份）
 
 local function data_dirs()
     local dirs = {}
@@ -159,19 +158,27 @@ function M.ctx(env)
             ctx.codes = nil
         end
     end
-    current = ctx
     return ctx
 end
 
--- 组件 init/fini 用：init 计数，fini 减到 0 就收尾（关 order 库、清缓存）
-function M.hold(env)
-    local ctx = M.ctx(env)
-    ctx.users = ctx.users + 1
-    return ctx
+-- 组件 init 用：把本方案的 ctx 存进 env.flow，并记一次引用。
+-- librime-lua 每个组件实例一个 env（init / fini / 每次调用拿到同一个），
+-- 所以状态挂 env 上就好，不必每次按 schema_id 去查。
+function M.attach(env)
+    local flow = M.ctx(env)
+    env.flow = flow
+    flow.users = flow.users + 1
+    return flow
 end
 
+-- 组件的回调里取（init 里已经放好）；拿不到说明这个实例没初始化成功
+function M.of(env)
+    return env and env.flow or nil
+end
+
+-- 组件 fini 用：计数减到 0 就收尾（关 order 库、清缓存）
 function M.release(env)
-    local ctx = M.ctx(env)
+    local ctx = M.of(env) or M.ctx(env)
     if ctx.users > 0 then
         ctx.users = ctx.users - 1
     end
@@ -193,15 +200,6 @@ function M.teardown(ctx)
     ctx.secondary = nil
     ctx.order = nil
     ctx.codes = nil
-end
-
-function M.current()
-    return current
-end
-
--- 拿当前调用所属的上下文（各模块公开函数开头用）
-function M.here()
-    return current
 end
 
 function M.cache(ctx, name, init)
