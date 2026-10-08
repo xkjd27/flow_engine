@@ -4,7 +4,8 @@
 --   * 形码键      -> 输入串只有笔形键时进入输入串，由纯形码表（<词库>.shape）
 --                    匹配；否则存进 flow_shape 属性，由 flow_filter 筛候选
 --   * ` 造词模式（见 flow_create）
---   * Tab 次简、`-` 调序上调、`=` 上调/下调
+--   * Tab 次简、动作键调序（promote/demote，造词时 create/delete；键位在 schema 的
+--     flow_engine/bindings 里配）
 --   * BackSpace 删形码 / 造词模式下按字删
 --   * 顶功与四码自动上屏
 --
@@ -22,8 +23,6 @@ local XK_BACKSPACE = 0xff08
 local XK_TAB = 0xff09
 local XK_RETURN = 0xff0d
 local XK_ESCAPE = 0xff1b
-local KEY_MINUS = 0x2d
-local KEY_EQUAL = 0x3d
 
 local function state(flow)
     return flow_env.cache(flow, "shape_processor", {})
@@ -356,18 +355,35 @@ local function processor(key_event, env)
         end
     end
 
-    -- `-` / `=`：造词模式 `-` 入库（并退出）、`=` 删除；否则手动调序
-    if code == KEY_MINUS or code == KEY_EQUAL then
-        if is_create then
-            if code == KEY_MINUS then
-                create.store(flow, ctx)
-            else
-                create.delete(flow, ctx)
-            end
+    -- 动作键（schema: flow_engine/bindings/*）：正常模式 promote/demote 调序，
+    -- 造词模式 create/delete 入库、删除。默认 create=promote、delete=demote，
+    -- 也就是「-」「=」一个键两种场合。
+    local b = flow_env.bindings(flow)
+    local act
+    if is_create then
+        if b.create ~= 0 and code == b.create then
+            act = "create"
+        elseif b.delete ~= 0 and code == b.delete then
+            act = "delete"
+        end
+    else
+        if b.promote ~= 0 and code == b.promote then
+            act = "promote"
+        elseif b.demote ~= 0 and code == b.demote then
+            act = "demote"
+        end
+    end
+    if act then
+        if act == "create" then
+            create.store(flow, ctx)
+            return 1
+        end
+        if act == "delete" then
+            create.delete(flow, ctx)
             return 1
         end
         if ctx:has_menu() and ctx:get_selected_candidate() then
-            if code == KEY_MINUS then
+            if act == "promote" then
                 promote(flow, ctx)
             else
                 lower_or_extend(flow, ctx)
@@ -375,7 +391,7 @@ local function processor(key_event, env)
             return 1
         end
         -- 组合中但没有候选（形码已超过词的全码、码还没打完等）：吞掉按键，
-        -- 否则 express_editor 会把原文连 `-` / `=` 一起上屏（hjn= 这种）
+        -- 否则 express_editor 会把原文连按键一起上屏（hjn= 这种）
         if ctx:is_composing() then
             return 1
         end

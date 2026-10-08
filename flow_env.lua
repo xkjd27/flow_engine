@@ -264,6 +264,58 @@ function M.sound_keys(ctx)
     return required_keys(ctx, "flow_engine/sound_keys", "声母键")
 end
 
+-- 动作键：schema 的 flow_engine/bindings 里配（键名写法同 rime 的 key_binder：
+-- minus / equal / Tab / F19…，单个字符也行，直接写 "-"）。
+--
+--   promote  正常模式：调序上调        demote  正常模式：降档延长
+--   create   造词模式：入库            delete  造词模式：删除
+--
+-- create / delete 不写就跟 promote / demote 同键 —— 默认就是一个「-」一个「=」
+-- 在两种场合各做一件事。配成空串 = 这个动作不绑键；键名不认识 = 当作没绑，只打 warning。
+-- 返回 { promote=<keycode>, demote, create, delete }（0 = 没绑），按方案缓存。
+local function keycode_of(ctx, path, name)
+    if name == nil or name == "" then
+        return 0
+    end
+    local ok, ev = pcall(KeyEvent, name)
+    local kc = (ok and ev and ev.keycode) or 0
+    if kc == 0 and log and log.warning then
+        log.warning("flow_env: " .. path .. " = '" .. tostring(name)
+                    .. "' 不是有效的键名，这个动作键不生效")
+    end
+    return kc
+end
+
+function M.bindings(ctx)
+    local st = M.cache(ctx, "bindings", {})
+    if not st.ready then
+        local promote = get_str(ctx.config, "flow_engine/bindings/promote", nil)
+        local demote = get_str(ctx.config, "flow_engine/bindings/demote", nil)
+        local create = get_str(ctx.config, "flow_engine/bindings/create", nil)
+        local delete = get_str(ctx.config, "flow_engine/bindings/delete", nil)
+        if create == nil then
+            create = promote
+        end
+        if delete == nil then
+            delete = demote
+        end
+        if promote == nil and log and log.warning then
+            log.warning("flow_env: schema 里没有 flow_engine/bindings/promote"
+                        .. "（调序上调键），这个动作键不生效")
+        end
+        if demote == nil and log and log.warning then
+            log.warning("flow_env: schema 里没有 flow_engine/bindings/demote"
+                        .. "（降档延长键），这个动作键不生效")
+        end
+        st.promote = keycode_of(ctx, "flow_engine/bindings/promote", promote)
+        st.demote = keycode_of(ctx, "flow_engine/bindings/demote", demote)
+        st.create = keycode_of(ctx, "flow_engine/bindings/create", create)
+        st.delete = keycode_of(ctx, "flow_engine/bindings/delete", delete)
+        st.ready = true
+    end
+    return st
+end
+
 -- 输入串是否「只有笔形键」（纯笔码）；键位没配就当不是
 function M.is_shape_input(ctx, s)
     if not s or s == "" then

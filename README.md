@@ -19,6 +19,10 @@ git clone --recurse-submodules https://github.com/xkjd27/rime_jd27_flow
 | --- | --- |
 | `flow_engine/sound_keys` | 声母键，如 `bcdfghjklmnpqrstuwxyz;` |
 | `flow_engine/shape_keys` | 笔形键，如 `aeiov` |
+| `flow_engine/bindings/promote` | 正常模式：调序上调键（默认「-」） |
+| `flow_engine/bindings/demote` | 正常模式：降档延长键（默认「=」） |
+| `flow_engine/bindings/create` | 造词模式：入库键（不写就跟 `promote` 同键） |
+| `flow_engine/bindings/delete` | 造词模式：删除键（不写就跟 `demote` 同键） |
 | `flow_order/backend` | 调序库后端：`leveldb`（默认）/ `txt` |
 | `flow_order/name` | 调序库名，默认 `<词库>.order`（如 `xkjd27c_flow.ice.order`） |
 | `flow_order/recent_max` | 最近造词列表上限 |
