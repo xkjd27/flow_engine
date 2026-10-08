@@ -130,6 +130,20 @@ function M.store(flow, ctx)
         sound = codes.scheme_code(flow, phrase) or ""
     end
     local ok = phrase ~= "" and sound ~= ""
+    -- 保底：逐字检查（多音节字、形码表里的部件、ZiDB 里没有的生僻字都不给入库）
+    if ok then
+        for _, c in utf8.codes(phrase) do
+            local ch = utf8.char(c)
+            if not codes.is_single_char(flow, ch) then
+                if log and log.warning then
+                    log.warning("flow_create: 「" .. phrase .. "」里有非单字的「"
+                                .. ch .. "」，不入库")
+                end
+                ok = false
+                break
+            end
+        end
+    end
     local shape = ""
     if ok then
         -- 音码归位到方案简码（顶功前进拼出来的全码 → 方案码）

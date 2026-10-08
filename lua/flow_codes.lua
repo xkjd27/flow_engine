@@ -214,6 +214,33 @@ function M.scheme_code(ctx, text)
     return list[1] and list[1].code
 end
 
+-- 正常单字判定（造词保底用）：它得有「音码开头、不超过 2 键」的码，而且
+-- 所有音码开头的码都不能超过 2 键。形码开头的（aeiov）那一批是形码表里的
+-- 部件/形简条目，不参与判断 —— 这样 又/得/有 这些常用字不会被它们拖累。
+--   * 首码是笔形键的：只出现在形码表里的部件（亅 氵 乛…），没有音码；
+--   * 音码超过 2 键的：多音节字（静态.txt 的 兡 兝 兞 瓩…，码是 3~6 键）；
+--   * 压根没码的：生僻到 ZiDB 里都没有的字（如 迍邅 里的 迍/邅）。
+local MAX_SINGLE_KEYS = 2
+
+function M.is_single_char(ctx, ch)
+    M.init(ctx)
+    local codes_of = state(ctx).codes[ch]
+    if not codes_of then
+        return false
+    end
+    local sound = flow_env.sound_keys(ctx) or ""
+    local has_sound = false
+    for code in pairs(codes_of) do
+        if sound:find(code:sub(1, 1), 1, true) then
+            if #code > MAX_SINGLE_KEYS then
+                return false
+            end
+            has_sound = true
+        end
+    end
+    return has_sound
+end
+
 -- code 是否是 text 的一个方案码（含多音变体）
 function M.is_scheme_code(ctx, text, code)
     for _, e in ipairs(build_codes(ctx, text)) do

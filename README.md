@@ -4,14 +4,16 @@
 
 ## 使用
 
-作为 submodule 挂在方案仓库的 `rime/lua`。clone 方案仓库时带上 submodule 即可：
+作为 submodule 挂在方案仓库的 `engine/`。clone 方案仓库时带上 submodule 即可：
 
 ```sh
 git clone --recurse-submodules https://github.com/xkjd27/rime_jd27c_flow
 git clone --recurse-submodules https://github.com/xkjd27/rime_jd27_flow
 ```
 
-不用 git 的话，把本仓库根目录的 `*.lua` 拷到 `<user>/lua/`：`flow_env.lua`、`flow_codes.lua`、`flow_filter.lua`、`flow_shape.lua`、`flow_order.lua`、`flow_create.lua`、`flow_shapes.lua`、`flow_secondary.lua`。
+不用 git 的话，把本仓库 `lua/*.lua` 拷到 `<user>/lua/`：`flow_env.lua`、`flow_codes.lua`、`flow_filter.lua`、`flow_shape.lua`、`flow_order.lua`、`flow_create.lua`、`flow_shapes.lua`、`flow_secondary.lua`。
+
+生成码表（在方案仓库根目录）：`python3 engine/tools/build_flow_dict.py --layout layout.py`。
 
 ## 配置与数据文件
 
