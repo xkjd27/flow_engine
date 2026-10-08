@@ -1,13 +1,14 @@
 /*
- * rime_probe.c —— 无 GUI 的 librime 测试器
+ * probe.c —— 无 GUI 的 librime 测试器（flow_engine 同步测试用）
+ *
+ * 编译：
+ *   cc probe.c -I/tmp/librime-src/src -o probe /usr/lib64/librime.so.1 \
+ *      -Wl,-rpath,/usr/lib64
  *
  * 用法：
- *   cc tools/rime_probe.c -I<librime>/src -o /tmp/rime_probe \
- *      /usr/lib64/librime.so.1 -Wl,-rpath,/usr/lib64
- *   /tmp/rime_probe <user_data_dir> [keys...]
- *
- * user_data_dir 里需要放好方案文件与 default.custom.yaml。
- * 不给 keys 时跑内置的一组测试。
+ *   ./probe <user_data_dir> [--sync] [keys] [select_index]
+ *     keys 支持 ^=空格 ~=退格 \t=Tab \n=回车，其它字符原样
+ *     --sync：跑完 keys 后调用 RimeSyncUserData（无 keys 则只同步）
  */
 
 #include <stdio.h>
@@ -57,6 +58,28 @@ static void print_commit(RimeSessionId s) {
   }
 }
 
+static int keycode_of(char c) {
+  if (c == '^') return ' ';
+  if (c == '~') return 0xff08;   /* BackSpace */
+  return (unsigned char)c;
+}
+
+/* 支持 \t \n \~ \^ 转义；普通字符原样 */
+static int next_keycode(const char** p) {
+  char c = **p;
+  if (c == '\\' && (*p)[1]) {
+    ++(*p);
+    switch (**p) {
+      case 't': return 0xff09;
+      case 'n': return 0xff0d;
+      case '~': return 0xff08;
+      case '^': return ' ';
+      default: return (unsigned char)**p;
+    }
+  }
+  return keycode_of(c);
+}
+
 static void run_case(const char* keys, int select_index) {
   RimeSessionId s = api->create_session();
   if (!s) {
@@ -65,16 +88,11 @@ static void run_case(const char* keys, int select_index) {
   }
   printf("keys \"%s\":\n", keys);
   for (const char* p = keys; *p; ++p) {
-    /* 允许用 ` 表示空格，~ 表示 BackSpace，\\n 表示回车 */
-    int kc = (*p == '`') ? ' ' : (*p == '~') ? 0xff08
-             : (*p == '\n') ? 0xff0d : (unsigned char)*p;
-    api->process_key(s, kc, 0);
-    /* 模拟 UI 每键拉一次候选，让 menu/selected candidate 准备好 */
-    drain_candidates(s);
+    api->process_key(s, next_keycode(&p), 0);
+    drain_candidates(s);   /* 模拟 UI 每键拉一次候选 */
   }
   show_candidates(s);
   if (select_index > 0) {
-    /* 数字键选词（1 起）并上屏 */
     api->process_key(s, '0' + select_index, 0);
     print_commit(s);
   } else {
@@ -131,6 +149,24 @@ static void bench(int rounds) {
 
 int main(int argc, char** argv) {
   const char* user_dir = (argc > 1) ? argv[1] : "/tmp/rime_flow_test";
+  int do_sync = 0;
+  const char* keys = NULL;
+  int select_index = 0;
+  int do_bench = 0;
+  int bench_rounds = 200;
+
+  for (int i = 2; i < argc; ++i) {
+    if (strcmp(argv[i], "--sync") == 0) {
+      do_sync = 1;
+    } else if (strcmp(argv[i], "--bench") == 0) {
+      do_bench = 1;
+      if (i + 1 < argc) bench_rounds = atoi(argv[++i]);
+    } else if (!keys) {
+      keys = argv[i];
+    } else {
+      select_index = atoi(argv[i]);
+    }
+  }
 
   api = rime_get_api();
   if (!api) {
@@ -161,33 +197,32 @@ int main(int argc, char** argv) {
     api->destroy_session(s);
   }
 
-  if (argc > 2 && strcmp(argv[2], "--bench") == 0) {
-    bench(argc > 3 ? atoi(argv[3]) : 200);
+  if (do_bench) {
+    bench(bench_rounds);
     api->finalize();
     return 0;
   }
 
-  if (argc > 2) {
-    int select_index = (argc > 3) ? atoi(argv[3]) : 0;
-    run_case(argv[2], select_index);
-  } else {
-    /* 3 键词简码 */
+  if (keys) {
+    run_case(keys, select_index);
+  }
+
+  if (do_sync) {
+    printf("SYNC...\n");
+    api->sync_user_data();
+    api->join_maintenance_thread();
+    printf("SYNC_OK\n");
+  }
+
+  if (!keys && !do_sync) {
     run_case("wum", 0);
-    /* 3 键全码 */
     run_case("wwukmf", 0);
-    /* 2 字词全码 */
     run_case("wumk", 0);
-    /* 整句：我们 + 是 */
     run_case("wumkuy", 0);
-    /* 4 字词节奏码：人 + 工/智/能 声母 */
     run_case("rkg;n", 0);
-    /* 4 字词全码 */
     run_case("rkgj;ynp", 0);
-    /* 3 字词：中国人（若词库有）*/
     run_case(";gr", 0);
-    /* 1 全码 + 3 声母：是中国人 */
     run_case("uy;gr", 0);
-    /* 上屏 + 用户词典学习 */
     run_case("wumk", 1);
     run_case("wumk", 0);
   }

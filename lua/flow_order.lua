@@ -7,6 +7,11 @@
 -- （librime 的 plain_userdb/tabledb 只接受「code+tab+词」这种用户词典
 --   key 格式，不适合当通用 KV，配置成 tabledb 会退回 txt。）
 --
+-- .userdb 后缀是 librime-lua 的 LevelDb 写死的，避不开；但 Rime 的同步/恢复
+-- 不会搞坏我们的数据：快照导出只认「码<TAB>词」格式的 key（我们的 ord/… /
+-- sbb/… 会被跳过），合并是按 key 求并集，不删不改我们的 key。以后 Rime
+-- 真改了行为再说。
+--
 -- 内存里始终有一份 order[key] = {候选1, 候选2...}，查询 O(1)；
 -- 只有 insert/remove/move_down/remove_word 时才写后端
 -- （db 单键写，txt 整文件重写）。remove_word 是反查删除（造词用）：
@@ -20,11 +25,16 @@
 -- （值=文本；没有就是不覆盖，回默认表）。
 -- 特殊 key "~secondary"：次简表（码=文本，Tab 学习/用户覆盖）。
 --
+-- 同步：每次修改会往用户目录的 <order 库名>.sync.txt 写一条状态断言（自有
+-- 文件格式，不是 userdb；Rime 的 backup_config_files 会把它拷进 sync 目录），
+-- 合并发生在 load 的时候，见 flow_sync.lua。
+--
 -- 调试用 .custom 切到 txt 即可手改数据。
 --
 -- 每个方案（schema_id）各自一份状态（含自己的 leveldb 句柄），见 flow_env.lua。
 
 local flow_env = require("flow_env")
+local flow_sync = require("flow_sync")
 
 local M = {}
 
@@ -46,6 +56,20 @@ local function state(flow)
         backend = "leveldb",
         recent_max = 20,
     })
+end
+
+-- text 是否还挂在某个 pin key 下（不含 ~ 特殊键）
+local function pinned_anywhere(st, text)
+    for key, list in pairs(st.order) do
+        if key:find("|", 1, true) and key:sub(1, 1) ~= "~" then
+            for _, t in ipairs(list) do
+                if t == text then
+                    return true
+                end
+            end
+        end
+    end
+    return false
 end
 
 local function user_dir()
@@ -177,16 +201,24 @@ end
 -- ---------------- db 后端 ----------------
 
 local function load_db(st)
+    -- 同步过来的记录 key 里一定带 tab（fsync <TAB>...）；如果这种 key 落在
+    -- ord/ / sbb/ 前缀下，那是被伪造/损坏的快照漏进来的，不是我们的私有
+    -- 数据：不进内存，并顺手删掉（否则会被 Rime 再导出、一直传播）。
+    local junk = {}
     local acc = st.db:query(KEY_PREFIX)
     if not acc then
         return
     end
     for k, v in acc:iter() do
-        local key = k:sub(#KEY_PREFIX + 1)
-        if key == SECONDARY_KEY then
-            parse_secondary(st, v)
+        if k:find("\t", 1, true) then
+            junk[#junk + 1] = k
         else
-            parse_value(st, key, v)
+            local key = k:sub(#KEY_PREFIX + 1)
+            if key == SECONDARY_KEY then
+                parse_secondary(st, v)
+            else
+                parse_value(st, key, v)
+            end
         end
     end
     -- DbAccessor 要先释放，之后 close 才安全
@@ -195,14 +227,20 @@ local function load_db(st)
 
     st.shengbi = {}
     local sacc = st.db:query(SHENGBI_PREFIX)
-    if not sacc then
-        return
+    if sacc then
+        for k, v in sacc:iter() do
+            if k:find("\t", 1, true) then
+                junk[#junk + 1] = k
+            else
+                st.shengbi[k:sub(#SHENGBI_PREFIX + 1)] = v
+            end
+        end
+        sacc = nil
+        collectgarbage()
     end
-    for k, v in sacc:iter() do
-        st.shengbi[k:sub(#SHENGBI_PREFIX + 1)] = v
+    for _, k in ipairs(junk) do
+        st.db:erase(k)
     end
-    sacc = nil
-    collectgarbage()
 end
 
 local function save_key(st, key)
@@ -245,6 +283,25 @@ end
 
 -- ---------------- 公共接口 ----------------
 
+-- flow_sync 合并时应用一条记录。应用期间 flow_sync 把 suppress 打开，
+-- 所以下面这些修改动作不会再反过来写新记录。
+local function apply_sync_record(flow, rec)
+    if rec.kind == "pin" then
+        M.remove_pin(flow, rec.identity)
+        M.insert(flow, rec.key, rec.identity, rec.index, rec.syl)
+    elseif rec.kind == "unpin" then
+        M.remove_pin(flow, rec.identity)
+    elseif rec.kind == "sbb" then
+        M.set_shengbi(flow, rec.identity, rec.text)
+    elseif rec.kind == "sbclear" then
+        M.clear_shengbi(flow, rec.identity)
+    elseif rec.kind == "sec" then
+        M.set_secondary(flow, rec.identity, rec.text)
+    elseif rec.kind == "secclear" then
+        M.clear_secondary(flow, rec.identity)
+    end
+end
+
 function M.init(flow)
     local st = state(flow)
     st.users = st.users + 1
@@ -260,6 +317,7 @@ function M.init(flow)
     end
     st.backend = backend
     st.name = name
+    st.sync = flow_sync.new_state(flow, name)
     local rmax = flow_env.get_int(flow, "flow_order/recent_max", nil)
     if rmax and rmax > 0 then
         st.recent_max = rmax
@@ -295,6 +353,15 @@ function M.init(flow)
             st.path = user_dir() .. "/" .. name .. ".txt"
             load_txt(st)
             log.warning("flow_order: db backend unavailable, fallback to txt")
+        end
+    end
+    -- 同步是独立的文本文件，和 order 后端无关（leveldb / txt 都能用）
+    if st.sync.enabled then
+        local ok, err = pcall(flow_sync.reconcile, st, function(rec)
+            apply_sync_record(flow, rec)
+        end)
+        if not ok then
+            log.error("flow_order: 同步记录合并失败：" .. tostring(err))
         end
     end
     st.ready = true
@@ -400,6 +467,18 @@ function M.set_secondary(flow, code, text)
     local st = state(flow)
     st.secondary[code] = text or ""
     save_key(st, SECONDARY_KEY)
+    flow_sync.record_secondary(st, code, text or "")
+end
+
+-- 删掉次简覆盖，回默认表（同步合并用；UI 目前没有入口）
+function M.clear_secondary(flow, code)
+    local st = state(flow)
+    if not code or st.secondary[code] == nil then
+        return
+    end
+    st.secondary[code] = nil
+    save_key(st, SECONDARY_KEY)
+    flow_sync.record_secondary_clear(st, code)
 end
 
 -- 声笔简码覆盖：nil = 没有覆盖；"" = 显式取消（盖掉默认表）
@@ -415,6 +494,7 @@ function M.set_shengbi(flow, code, text)
     local st = state(flow)
     st.shengbi[code] = text or ""
     save_shengbi(st, code)
+    flow_sync.record_shengbi(st, code, text or "")
 end
 
 -- 删掉覆盖，回默认表（正常模式按 = 还原）
@@ -425,6 +505,7 @@ function M.clear_shengbi(flow, code)
     end
     st.shengbi[code] = nil
     save_shengbi(st, code)
+    flow_sync.record_shengbi_clear(st, code)
 end
 
 -- 把 text 从声笔简码覆盖里全删掉（同一个词换码时用；与 pin 无关，
@@ -443,6 +524,7 @@ function M.remove_shengbi_word(flow, text)
     end
     for _, code in ipairs(hits) do
         save_shengbi(st, code)
+        flow_sync.record_shengbi_clear(st, code)
     end
 end
 
@@ -477,6 +559,7 @@ function M.insert(flow, key, text, index, syl)
         st.syllables[key][text] = syl
     end
     save_key(st, key)
+    flow_sync.record_pin(st, key, text, index, syl)
 end
 
 -- 把 text 从 key 的手动列表里移出（空则删除整个 key）
@@ -486,9 +569,11 @@ function M.remove(flow, key, text)
     if not list then
         return
     end
+    local changed = false
     for i = #list, 1, -1 do
         if list[i] == text then
             table.remove(list, i)
+            changed = true
         end
     end
     local syls = st.syllables[key]
@@ -503,6 +588,9 @@ function M.remove(flow, key, text)
         st.syllables[key] = nil
     end
     save_key(st, key)
+    if changed and not pinned_anywhere(st, text) then
+        flow_sync.record_unpin(st, text)
+    end
 end
 
 -- 反查删除（造词用）：把 text 从**所有** key 里删掉（含最近造词记录），
@@ -544,6 +632,9 @@ function M.remove_word(flow, text)
             end
             save_key(st, key)
         end
+    end
+    if removed > 0 and not pinned_anywhere(st, text) then
+        flow_sync.record_unpin(st, text)
     end
     return removed
 end
@@ -609,10 +700,15 @@ function M.move_down(flow, key, text)
                     st.order[key] = nil
                     st.syllables[key] = nil
                 end
+                save_key(st, key)
+                if not pinned_anywhere(st, text) then
+                    flow_sync.record_unpin(st, text)
+                end
             else
                 list[i], list[i + 1] = list[i + 1], list[i]
+                save_key(st, key)
+                flow_sync.record_pin(st, key, text, i + 1)
             end
-            save_key(st, key)
             return
         end
     end
@@ -632,6 +728,7 @@ function M.move_down_keep(flow, key, text)
             if i < #list then
                 list[i], list[i + 1] = list[i + 1], list[i]
                 save_key(st, key)
+                flow_sync.record_pin(st, key, text, i + 1)
             end
             return
         end
