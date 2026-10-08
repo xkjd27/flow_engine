@@ -21,11 +21,14 @@
 音码、按词频排）是两条路。不过拼音→音码的编码规则（含飞键）和词库读写
 小工具是和 27/27C 共用 ``flow_dict_lib`` 的，没有各写一份。
 
-键道6 布局
-----------
+布局表
+------
+键位表来自方案仓库的 ``layout.py``（``--layout``，默认 ``layout.py``），
+与 27/27C・流 的 layout.py 同构：
+
 * 声母键：sh = ``e``，零声母 = ``x``；zh = ``q``/``f``、ch = ``j``/``w``
-  （外侧韵母用 q/j，内侧用 f/w，见 ``KT_S2K_YUN``）；
-* 韵母键：见 ``KT_Y2K``（uang 是飞键 ``m``/``x``）；
+  （外侧韵母用 q/j，内侧用 f/w，见 ``JD_S2K_YUN``）；
+* 韵母键：见 ``JD_Y2K``（uang 是飞键 ``m``/``x``）；
 * 笔形键：``aiouv``（与音码键不相交，所以原码按第一个 aiouv 字母切分即可）。
 
 权重
@@ -39,13 +42,13 @@
 
 用法::
 
-    # 默认读 /tmp/KeyTao（不在就 git clone）、/tmp/rime-ice
-    keytao_table_to_flow_dict.py --out-dir /path/to/rime_keytao_flow/rime
+    # 在方案仓库根目录（读 layout.py，默认 KeyTao=/tmp/KeyTao、冰=/tmp/rime-ice）
+    keytao_table_to_flow_dict.py --out-dir rime
 
-    # 指定 KeyTao / 冰词库 / 袖珍词库 / 输出前缀
-    keytao_table_to_flow_dict.py --keytao ~/KeyTao --rime-ice /tmp/rime-ice \\
-        --pinyin-simp /tmp/rime-pinyin-simp/pinyin_simp.dict.yaml \\
-        --out-dir ./rime --name keytao_flow
+    # 指定 layout.py / KeyTao / 冰词库 / 袖珍词库
+    keytao_table_to_flow_dict.py --layout layout.py --keytao ~/KeyTao \\
+        --rime-ice /tmp/rime-ice --pinyin-simp /path/pinyin_simp.dict.yaml \\
+        --out-dir rime --name keytao_flow
 """
 
 import argparse
@@ -58,61 +61,11 @@ import flow_dict_lib as lib
 
 KT_REPO_URL = 'https://github.com/xkinput/KeyTao.git'
 KT_TABLES = ('keytao.single', 'keytao.phrase', 'keytao.supplement')
-TITLE = '键道・函流'
 MAX_CODE = 6                    # 单字最长原码（音码 2 + 形码 4）
 LENGTH_WEIGHT = 0.35            # 词组按字数降权底数（与 build_flow_dict 默认一致）
 
-# ---------------------------------------------------------------------------
-# 键道6 布局（键道文档：键道音码 / 飞键）
-#   https://keytao-docs.rea.ink/guide/learn-xkjd/phonetics-rules.html
-#   https://keytao-docs.rea.ink/guide/advance-in-xkjd/alt-code.html
-# 与 27C 不同：y 开头的音节按「y + 原韵母」拼（也 = ye、有 = yd、眼 = yf、
-# 样 = yp），不做 ia/ian/iang/iao/ie/iu 的还原；只有 ü 系要还原
-# （ju/qu/xu/yu -> v，yue/yuan/yun 由去声母得到 ue/uan/un）。
-# ---------------------------------------------------------------------------
-
-KT_LAYOUT = lib.from_tables({
-    'PY_TRANSFORM': {
-        'qve': 'que', 'lve': 'lue', 'nve': 'nue', 'jve': 'jue', 'xve': 'xue',
-        'yve': 'yue', 'm': 'en', 'ng': 'eng',
-    },
-    'PY_SHENG': {
-        'a': '~', 'ai': '~', 'an': '~', 'ang': '~', 'ao': '~',
-        'e': '~', 'ei': '~', 'en': '~', 'eng': '~', 'er': '~',
-        'o': '~', 'ou': '~',
-    },
-    'PY_YUN': {
-        'ju': 'v', 'qu': 'v', 'xu': 'v', 'yu': 'v',
-        'a': 'a', 'ai': 'ai', 'an': 'an', 'ang': 'ang', 'ao': 'ao',
-        'e': 'e', 'ei': 'ei', 'en': 'en', 'eng': 'eng', 'er': 'er',
-        'o': 'o', 'ou': 'ou',
-    },
-    'JD_S2K': {
-        'b': 'b', 'p': 'p', 'm': 'm', 'f': 'f', 'd': 'd', 't': 't', 'n': 'n',
-        'l': 'l', 'g': 'g', 'k': 'k', 'h': 'h', 'j': 'j', 'q': 'q', 'x': 'x',
-        'r': 'r', 'z': 'z', 'c': 'c', 's': 's', 'y': 'y', 'w': 'w',
-        'sh': 'e', '~': 'x',
-    },
-    'JD_Y2K': {
-        'a': 's', 'ia': 's', 'ai': 'h', 'an': 'f', 'ang': 'p', 'ao': 'z',
-        'e': 'e', 'ei': 'w', 'en': 'n', 'eng': 'r', 'er': 'j', 'i': 'k',
-        'ian': 'm', 'iang': 'x', 'iao': 'c', 'ie': 'd', 'in': 'b', 'ing': 'g',
-        'iong': 'y', 'iu': 'q', 'o': 'l', 'uo': 'l', 'ong': 'y', 'ou': 'd',
-        'u': 'j', 'v': 'l', 'ua': 'q', 'uai': 'g', 'uan': 't', 'uang': 'mx',
-        'ue': 'h', 'ui': 'b', 'un': 'w',
-    },
-    'JD_S2K_YUN': {
-        'zh': [('q', 'an ang ei en eng u un'),
-               ('f', 'a i ong ou ua uai uan uang ui uo'),
-               ('qf', 'ai ao e')],
-        'ch': [('j', 'ai an ang en eng u un'),
-               ('w', 'a i ong ou ua uai uan uang ui uo'),
-               ('jw', 'ao e')],
-    },
-    'JD_B': {'乛': 'a', '丿': 'u', '丨': 'i', '丶': 'o', '㇐': 'v'},
-}, name='keytao')
-SHAPE_KEYS = KT_LAYOUT.SHAPE_KEYS           # aiouv
-
+LAYOUT = None                   # 方案 layout.py（--layout 载入）
+SHAPE_KEYS = ''                 # 形码键集合（由 LAYOUT 填）
 
 # ---------------------------------------------------------------------------
 # 键道6 原版码表 -> keytao 变体
@@ -317,7 +270,7 @@ def encode_words(loaded, char_codes):
     def add(text, reading, weight):
         if not reading:
             return
-        for code, scale in KT_LAYOUT.word_codes(reading, 1.0, LENGTH_WEIGHT):
+        for code, scale in LAYOUT.word_codes(reading, 1.0, LENGTH_WEIGHT):
             key = (text, code)
             w = weight * scale
             if w > out.get(key, 0.0):
@@ -325,7 +278,7 @@ def encode_words(loaded, char_codes):
 
     words, vocab = loaded
     for text, syllables, weight in words:
-        add(text, lib.syllables_reading(KT_LAYOUT, syllables), weight)
+        add(text, lib.syllables_reading(LAYOUT, syllables), weight)
     for text, weight in vocab:
         add(text, auto_read(text, char_codes), weight)
     return out
@@ -366,7 +319,8 @@ def variant_header(name, variant, note):
             'import_tables:\n'
             '  - %s.danzi\n'
             '  - %s.shape\n'
-            '...\n' % (TITLE, note, name, variant, name, name))
+            '...\n' % (LAYOUT.meta['title'], note, name, variant,
+                        name, name))
 
 
 def write_variant(out_dir, name, variant, note, rows):
@@ -387,6 +341,8 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--layout', default='layout.py', metavar='FILE',
+                    help='方案 layout.py（默认 %(default)s）')
     ap.add_argument('--keytao', default='/tmp/KeyTao', metavar='DIR',
                     help='KeyTao 仓库路径（默认 %(default)s；不在则自动 clone）')
     ap.add_argument('--rime-ice', default='/tmp/rime-ice', metavar='DIR',
@@ -399,6 +355,9 @@ def main():
                     help='输出前缀（默认 %(default)s）')
     args = ap.parse_args()
 
+    global LAYOUT, SHAPE_KEYS
+    LAYOUT = lib.load_layout(args.layout)
+    SHAPE_KEYS = LAYOUT.SHAPE_KEYS
     name = args.name
     repo = find_keytao(args.keytao)
     print('数据源：')
