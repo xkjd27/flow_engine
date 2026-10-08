@@ -141,6 +141,18 @@ def replace_tokens(code):
     return code
 
 
+def is_private_use(char):
+    """上游数据里的私用区字符（U+E000–U+F8FF 等）。
+
+    键道自己的字库把这些码位映射到字形，别处（Rime / 网页 / 系统字体）只会显示成
+    豆腐块。上游 ``补充.txt`` 里目前只有一个：U+E818，「补充提示」段里首笔为折的
+    那个部件（旁边是乛 / 氵 / 氺 / 乚）。
+    """
+    cp = ord(char)
+    return (0xE000 <= cp <= 0xF8FF or 0xF0000 <= cp <= 0xFFFFD or
+            0x100000 <= cp <= 0x10FFFD)
+
+
 def load_shape_entries(path, shape_section):
     """从上游 ``Lambda/Static/补充.txt`` 提取纯形码（笔形）条目：
     展开 ``<token>`` 后 code 全部是笔形键（上游 JD_B 的值）。
@@ -148,6 +160,9 @@ def load_shape_entries(path, shape_section):
     包括上游纯形码段（配置 shape_section）、「补充提示」「部首偏旁」；该段里每个码
     只保留第一条（本体，如 又a）——多出来的（如 识o）原来排在
     shape.dict 的 2 号位，现在交给次简表（flow_secondary.lua）管。
+    私用区元素（见 ``is_private_use``）直接丢掉：码表里的「元素 → 键位」只有在
+    某个字的笔顺里出现那个元素时才会被查到，而 ZiDB 笔顺表里没有任何字引用它们
+    （上游 补充.txt 的 U+E818 就是这种死条目）。
     返回 (entries, extras)，extras 只用于打印。
     """
     entries = []
@@ -174,6 +189,8 @@ def load_shape_entries(path, shape_section):
                 continue
             row = line.split('\t')
             if len(row) < 2 or not row[0] or not row[1]:
+                continue
+            if any(is_private_use(c) for c in row[0]):
                 continue
             code = replace_tokens(row[1].strip())
             if not code or not re.fullmatch('[%s]+' % re.escape(SHAPE_KEYS), code):
