@@ -6,9 +6,11 @@
 --   * ` 造词模式、`` 声笔调整模式（见 flow_create / flow_shengbi）
 --   * Tab 次简、动作键（promote / demote 一个键多种场合；键位在 schema 的
 --     flow_engine/bindings 里配）
---   * 翻页键（prev_page / next_page，到头按 flow_engine/page_edge 处理）
 --   * BackSpace 删形码 / 造词模式下按字删
 --   * 顶功与四码自动上屏
+--   * 顶标点：引擎不吃的可打印键（标点）在交给后面的处理器之前，组合里有
+--     候选就先顶掉当前内容再让按键继续 —— 新组合第 1 页按 `[` 也顶屏就是
+--     这条规则的效果（翻页键不用单独监听，翻不动时自然落到这里）
 --
 -- 声母键里的标点（`;`）连按两个给候选 —— 见 flow_filter（标点值取 schema
 -- 的 punctuator 段，全角 / 半角各一份）。
@@ -63,84 +65,6 @@ local function commit_current(ctx)
             ctx:clear()
         end
     end
-end
-
--- 翻页键（schema: flow_engine/bindings/prev_page / next_page）转发给 selector
--- （它认 Page_Up / Page_Down，翻页标记等行为跟原来的 key_binder 绑定一致），
--- 翻动了就吞掉按键；没翻动（已经在第一页 / 最后一页）按 flow_engine/page_edge：
---   ignore  吞掉
---   topup   顶屏：当前内容上屏，然后这个按键接着往下走（`[` 顺带出「候选）
---   pass    不顶，直接交给后面的处理器
--- 翻过页（段的 paging 标记还在）时只翻页，到头也不顶 —— 否则一直按 [ 翻回首页
--- 后很容易误顶（原来的 key_binder 用 when: paging 就是防这个）。
--- 标点候选（punct）不归翻页键管：那种时候连按是换标点候选，交给 punctuator。
--- 返回 true = 这个按键已处理完（调用方 return 1），false = 继续往下走。
-local function page_event(flow, name)
-    local st = state(flow)
-    st.page_events = st.page_events or {}
-    local ev = st.page_events[name]
-    if not ev then
-        ev = KeyEvent(name)
-        st.page_events[name] = ev
-    end
-    return ev
-end
-
-local function selected_index(ctx)
-    local seg = ctx.composition and ctx.composition:back()
-    return seg and seg.selected_index or nil
-end
-
--- 当前是不是标点候选（punct）：是的话翻页键要让路（连按换候选）
-local function punct_segment(ctx)
-    local seg = ctx.composition and ctx.composition:back()
-    local cand = seg and seg:get_selected_candidate()
-    return cand and cand.type == "punct"
-end
-
-local function page_key(flow, env, ctx, code, is_create)
-    local b = flow_env.bindings(flow)
-    local name
-    if b.prev_page ~= 0 and code == b.prev_page then
-        name = "Page_Up"
-    elseif b.next_page ~= 0 and code == b.next_page then
-        name = "Page_Down"
-    else
-        return false
-    end
-    if not ctx:is_composing() then
-        return false        -- 没组合：`[` 还是出「
-    end
-    if punct_segment(ctx) then
-        return false        -- 标点候选：`[` `]` 连按是换候选
-    end
-    -- 翻过页了（段上的 paging 标记还在）：翻页键就只翻页，到头也吞掉。
-    -- 原来的 key_binder 绑定就是这么分的（when: paging / when: has_menu）——
-    -- 一直按 [ 翻回首页后，再按一下不会不小心把候选顶上去。
-    local seg = ctx.composition and ctx.composition:back()
-    local paging_only = seg and seg:has_tag("paging")
-    -- 有候选才有页可翻（没候选时 Page_Down 会漏给编辑器/应用）
-    if ctx:has_menu() then
-        local before = selected_index(ctx)
-        env.engine:process_key(page_event(flow, name))
-        if paging_only or selected_index(ctx) ~= before then
-            return true     -- 翻动了 / 翻页模式下到头
-        end
-    elseif paging_only then
-        return true         -- 翻页模式下连候选都没了：吞掉
-    end
-    -- 到头了（还没翻过页）。造词模式里顶屏会把造词标记一起上屏，按 ignore 处理
-    local edge = is_create and "ignore" or b.edge
-    if edge == "topup" then
-        if ctx:has_menu() and ctx:get_selected_candidate() then
-            ctx:commit()
-            ctx:set_property(PROP, "")
-            -- 顶屏之后按键继续：`[` 接着出「候选，想打标点随时可选
-            return false
-        end
-        return true
-    end
-    return edge ~= "pass"
 end
 
 -- 把 text 放到 input|shape 的首位；目标位若已被其他候选占据，
@@ -408,11 +332,6 @@ local function processor(key_event, env)
         return 2
     end
 
-    -- 翻页键：能翻就翻，到头按 flow_engine/page_edge（见 page_key）
-    if page_key(flow, env, ctx, code, is_create) then
-        return 1
-    end
-
     -- 造词模式：空格/数字用于分词选择；
     -- 还没打码（只有 `）或无候选时，空格视为非法内容，直接上屏退出
     if is_create then
@@ -560,6 +479,23 @@ local function processor(key_event, env)
             -- 若无候选（如 5 键节奏码的前 4 键不合法），则让按键继续延长输入
             ctx:commit()
         end
+    end
+
+    -- 顶标点：剩下的可打印键（标点）交给后面的处理器（punctuator / 编辑器）
+    -- 之前，组合里有候选就先顶掉当前内容再让按键继续 —— 「新组合第 1 页按
+    -- `[` 」就是这样顶屏的，翻页键不用单独监听（翻页本身还是 key_binder 的
+    -- 绑定，匹配上就被它吃掉，不会走到这里）。
+    -- 空格（上屏首选）和数字（选候选）不在此列；声母键 / 笔形键也不在此列
+    -- （上面已经处理过，音码键是 fall-through，不加这条会把每个字母都顶掉）；
+    -- 标点候选（punct）也不顶 —— 那种时候连按是换 / 累积标点，交给 punctuator；
+    -- 造词模式不顶（会把造词标记一起上屏）。
+    local topup_cand = ctx:is_composing() and ctx:get_selected_candidate()
+    if not is_create and key ~= " " and not key:match("%d") and
+            not shape_key_set(flow)[key] and
+            not flow_env.sound_keys(flow):find(key, 1, true) and
+            topup_cand and topup_cand.type ~= "punct" then
+        ctx:commit()
+        ctx:set_property(PROP, "")
     end
 
     return 2

@@ -264,17 +264,18 @@ function M.sound_keys(ctx)
     return required_keys(ctx, "flow_engine/sound_keys", "声母键")
 end
 
--- 动作键 / 翻页键：schema 的 flow_engine/bindings 里配（键名写法同 rime 的
--- key_binder：minus / equal / bracketleft / Tab / F19…，单个字符也行）。
+-- 动作键：schema 的 flow_engine/bindings 里配（键名写法同 rime 的 key_binder：
+-- minus / equal / Tab / F19…，单个字符也行，直接写 "-"）。
 --
---   promote    正常模式：调序上调；造词模式：入库；声笔调整模式：设为 sb
---   demote     正常模式：降档延长；造词模式：删除；声笔调整模式：设为 sbb
---   prev_page  上一页；next_page 下一页（可选：不配就完全不由引擎处理，
---              留给方案自己的 key_binder）
+--   promote  正常模式：调序上调；造词模式：入库；声笔调整模式：设为 sb
+--   demote   正常模式：降档延长；造词模式：删除；声笔调整模式：设为 sbb
+--
+-- 翻页键不在这里：翻页还是方案的 key_binder 绑定（when: paging /
+-- when: has_menu → Page_Up / Page_Down），引擎只在没人处理按键时顶（见
+-- flow_shape 的「顶标点」），所以正常翻页完全不受影响。
 --
 -- 配成空串 = 这个动作不绑键；键名不认识 = 当作没绑，只打 warning。
--- 返回 { promote=<keycode>, demote=<keycode>, prev_page=<keycode>,
---        next_page=<keycode>, edge=<翻页到头的行为> }（0 = 没绑），按方案缓存。
+-- 返回 { promote=<keycode>, demote=<keycode> }（0 = 没绑），按方案缓存。
 local function keycode_of(ctx, path, name)
     if name == nil or name == "" then
         return 0
@@ -364,34 +365,11 @@ function M.punct_comment(text)
     return ""
 end
 
--- 翻页键到头（第 1 页再往前 / 最后一页再往后）时的行为
--- （flow_engine/page_edge）：
---   ignore  无效翻页键，吞掉（默认）
---   topup   顶屏：当前内容上屏
---   pass    引擎不处理，交给后面的处理器（`[` 出「 这类标点候选）
-local PAGE_EDGES = { ignore = true, topup = true, pass = true }
-
-local function page_edge_of(ctx)
-    local edge = get_str(ctx.config, "flow_engine/page_edge", "ignore")
-    if not PAGE_EDGES[edge] then
-        if log and log.warning then
-            log.warning("flow_env: flow_engine/page_edge = '" .. tostring(edge)
-                        .. "' 不认识（ignore / topup / pass），按 ignore")
-        end
-        return "ignore"
-    end
-    return edge
-end
-
 function M.bindings(ctx)
     local st = M.cache(ctx, "bindings", {})
     if not st.ready then
         local promote = get_str(ctx.config, "flow_engine/bindings/promote", nil)
         local demote = get_str(ctx.config, "flow_engine/bindings/demote", nil)
-        local prev_page = get_str(ctx.config, "flow_engine/bindings/prev_page",
-                                 nil)
-        local next_page = get_str(ctx.config, "flow_engine/bindings/next_page",
-                                 nil)
         if promote == nil and log and log.warning then
             log.warning("flow_env: schema 里没有 flow_engine/bindings/promote"
                         .. "（调序上调键），这个动作键不生效")
@@ -402,11 +380,6 @@ function M.bindings(ctx)
         end
         st.promote = keycode_of(ctx, "flow_engine/bindings/promote", promote)
         st.demote = keycode_of(ctx, "flow_engine/bindings/demote", demote)
-        st.prev_page = keycode_of(ctx, "flow_engine/bindings/prev_page",
-                                  prev_page)
-        st.next_page = keycode_of(ctx, "flow_engine/bindings/next_page",
-                                  next_page)
-        st.edge = page_edge_of(ctx)
         st.ready = true
     end
     return st
