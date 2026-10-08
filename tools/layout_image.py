@@ -16,9 +16,12 @@
     layout_image.py --layout layout.py --out docs/layout.png
     layout_image.py --layout layout.py --keyboard colemak \\
         --shape-dict rime/xkjd27c_flow.shape.dict.yaml --out docs/layout.png
+    layout_image.py --layout layout.py --shape-dict rime/x.shape.dict.yaml \\
+        --json web/data/layout.json
 
 ``--keyboard`` 支持 ``qwerty`` / ``colemak``，也可以直接给三行字母
-（如 ``qwfpgjluy;|arstdhneio|zxcvbkm``）。
+（如 ``qwfpgjluy;|arstdhneio|zxcvbkm``）。``--json`` 导出同一份键位表给网页用
+（只算一次，图和网页不会各算一遍）。
 """
 
 import argparse
@@ -84,7 +87,9 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--layout', required=True, help='方案 layout.py')
-    ap.add_argument('--out', required=True, help='输出 PNG 路径')
+    ap.add_argument('--out', default=None, help='输出 PNG 路径（--json 时可省）')
+    ap.add_argument('--json', default=None,
+                    help='另存一份键位表 JSON（网页用），给了就不画图')
     ap.add_argument('--keyboard', default='qwerty',
                     help='键盘排列：qwerty / colemak / 三行字母（| 分隔）')
     ap.add_argument('--shape-dict', default=None,
@@ -121,6 +126,46 @@ def main():
     for b, k in layout.JD_B.items():
         stroke.setdefault(k, []).append(b)
     shape = load_shape_items(args.shape_dict, layout)
+
+    # ---- 给网页用的 JSON（同一次计算，图和网页不会各算一遍） ----
+    if args.json:
+        import json
+        keys = {}
+        all_keys = set(sheng) | set(yun) | set(stroke) | set(shape)
+        for k in sorted(all_keys):
+            keys[k] = {
+                'sheng': sheng.get(k, []),
+                'yun': yun.get(k, []),
+                'stroke': stroke.get(k, []),
+                'shape': [[t, r] for t, r in shape.get(k, [])],
+            }
+        # 引擎认的键位字母表（网页体验模式要按它决定「这一键给不给 librime」）
+        sound_keys = set()
+        for s_, ks in layout.JD_S2K.items():
+            if s_ in layout.JD_S2K_YUN:
+                continue
+            sound_keys.update(ks if isinstance(ks, str) else [ks])
+        for s_, rules in layout.JD_S2K_YUN.items():
+            for keys_, _yuns in rules:
+                sound_keys.update(keys_)
+        shape_keys = set(layout.JD_B.values())
+
+        data = {
+            'name': getattr(layout, 'NAME', ''),
+            'title': getattr(layout, 'TITLE', ''),
+            'keyboard': args.keyboard,
+            'rows': rows,
+            'keys': keys,
+            'soundKeys': ''.join(sorted(sound_keys)),
+            'shapeKeys': ''.join(sorted(shape_keys)),
+        }
+        with open(args.json, 'w', encoding='utf-8') as fh:
+            json.dump(data, fh, ensure_ascii=False, sort_keys=True, indent=1)
+        print('写出 %s（%d 个键）' % (args.json, len(keys)))
+        return
+
+    if not args.out:
+        ap.error('要么给 --out（画图），要么给 --json（导出键位表）')
 
     # ---- 画布几何 ----
     s = args.scale
