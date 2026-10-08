@@ -71,6 +71,8 @@ end
 --   ignore  吞掉
 --   topup   顶屏：当前内容上屏，然后这个按键接着往下走（`[` 顺带出「候选）
 --   pass    不顶，直接交给后面的处理器
+-- 翻过页（段的 paging 标记还在）时只翻页，到头也不顶 —— 否则一直按 [ 翻回首页
+-- 后很容易误顶（原来的 key_binder 用 when: paging 就是防这个）。
 -- 标点候选（punct）不归翻页键管：那种时候连按是换标点候选，交给 punctuator。
 -- 返回 true = 这个按键已处理完（调用方 return 1），false = 继续往下走。
 local function page_event(flow, name)
@@ -112,15 +114,22 @@ local function page_key(flow, env, ctx, code, is_create)
     if punct_segment(ctx) then
         return false        -- 标点候选：`[` `]` 连按是换候选
     end
+    -- 翻过页了（段上的 paging 标记还在）：翻页键就只翻页，到头也吞掉。
+    -- 原来的 key_binder 绑定就是这么分的（when: paging / when: has_menu）——
+    -- 一直按 [ 翻回首页后，再按一下不会不小心把候选顶上去。
+    local seg = ctx.composition and ctx.composition:back()
+    local paging_only = seg and seg:has_tag("paging")
     -- 有候选才有页可翻（没候选时 Page_Down 会漏给编辑器/应用）
     if ctx:has_menu() then
         local before = selected_index(ctx)
         env.engine:process_key(page_event(flow, name))
-        if selected_index(ctx) ~= before then
-            return true     -- 翻动了
+        if paging_only or selected_index(ctx) ~= before then
+            return true     -- 翻动了 / 翻页模式下到头
         end
+    elseif paging_only then
+        return true         -- 翻页模式下连候选都没了：吞掉
     end
-    -- 到头了。造词模式里顶屏会把造词标记一起上屏，按 ignore 处理
+    -- 到头了（还没翻过页）。造词模式里顶屏会把造词标记一起上屏，按 ignore 处理
     local edge = is_create and "ignore" or b.edge
     if edge == "topup" then
         if ctx:has_menu() and ctx:get_selected_candidate() then
