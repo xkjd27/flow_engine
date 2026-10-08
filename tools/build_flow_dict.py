@@ -451,18 +451,51 @@ def load_zidb_static(path):
 # 音码生成
 # ---------------------------------------------------------------------------
 
-def build_char_codes(zidb, zidb_static, char_w, char_reading_w, default_weight):
+# 单字最长原码（音码 2 + 形码 4）——权重分层的层数
+MAX_CHAR_CODE = 6
+
+
+def build_char_codes(zidb, zidb_static, char_w, char_reading_w, default_weight,
+                     shapes=None):
     """char -> [(全码, 声母码, 权重)]，含 static 音码与多音字。
 
-    权重优先取词库里的按读音字频（见 jian=3460998 / 见 xian=34609）；
-    没有则退回「字频 × 键道短码长度衰减」（每长一码低一个数量级），
-    再没有字频才用 default_weight 对应的缺省值。
+    权重 = 原版短码长度分层（短码恒大于长码）：
+
+        weight = MAX_CHAR_CODE + 1 - 短码长度
+
+    短码长度是 ZiDB 读音后那个数（原版 danzi 给该读音的简码长度）。原版同一
+    音码下「码短的在前面」（碘 dmv 排在 玷 dmvv、靛 dmvvo 前面），所以短码
+    长度小的层恒大于大的；同一层内不再按字频重排——这个单字表就是照本方案
+    布局生成的，层内保持原样即可。
+
+    层内唯一要调的是**重码**：音码 + 形码完全一样的字（如 咒/呪），按 ZiDB
+    的 rank 排（rank 小的在前）；微调量 < 0.5，不会跨层。
     """
+    shapes = shapes or {}
     raw = {}
+    dup_frac = {}
+    by_full = {}
+    for char, rank, pinyins in zidb:
+        shape = shapes.get(char, '')
+        if not shape:
+            continue
+        for py, jd_w in pinyins:
+            if jd_w <= 0:
+                continue
+            r = syllable_reading(py)
+            if not r:
+                continue
+            by_full.setdefault(r[0] + shape, []).append((rank, char))
+    for code, items in by_full.items():
+        if len(items) < 2:
+            continue
+        items.sort()
+        n = len(items)
+        for i, (_rank, char) in enumerate(items):
+            dup_frac[(code, char)] = 0.5 * (n - i) / (n + 1)
+
     for char, _rank, pinyins in zidb:
-        lens = [w for _, w in pinyins if w > 0]
-        base_len = min(lens) if lens else 5
-        cw = char_w.get(char)
+        shape = shapes.get(char, '')
         for py, jd_w in pinyins:
             if jd_w <= 0:  # 键道标记的无理读音
                 continue
@@ -470,12 +503,8 @@ def build_char_codes(zidb, zidb_static, char_w, char_reading_w, default_weight):
             if not r:
                 continue
             full, init = r
-            weight = char_reading_w.get((char, normalize_py(py)))
-            if weight is None:
-                if cw is not None:
-                    weight = cw * (10.0 ** (base_len - jd_w))
-                else:
-                    weight = 10.0 ** (5 - min(jd_w, 5))
+            layer = MAX_CHAR_CODE + 1 - min(jd_w, MAX_CHAR_CODE)
+            weight = layer + dup_frac.get((full + shape, char), 0.0)
             raw.setdefault(char, []).append((full, init, weight))
     for char, code in zidb_static:
         raw.setdefault(char, []).append((code, code[0], default_weight))
@@ -816,7 +845,7 @@ def main():
         os.path.join(source, 'Lambda', 'ZiDB', '静态.txt'))
 
     char_codes = build_char_codes(zidb, zidb_static, char_w,
-                                  char_reading_w, args.default_weight)
+                                  char_reading_w, args.default_weight, shapes)
     danzi = build_danzi(char_codes, args.initial_weight)
     if args.no_align_original:
         print('原版首选对齐：已关闭')
