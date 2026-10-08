@@ -4,11 +4,12 @@
 
 图上每个键显示：
 
-* 左上角灰色：物理键位字母（按 ``--keyboard`` 的键盘排列放）；
-* 右上角红色：**声母**（含 ``JD_S2K_YUN`` 的飞键/拼合规则，如 zh 在 q/f 两键）；
-* 下方蓝色：**韵母**（``JD_Y2K``，一个键多个韵母就都列出来）；
+* 左上角灰色大写：物理键位字母（按 ``--keyboard`` 的键盘排列放）；
+* 右上角红色大写：**声母**（含 ``JD_S2K_YUN`` 的飞键/拼合规则，如 zh 在 q/f
+  两键）；与键名相同的声母不重复画（键名本身就是它）；
+* 下方蓝色小写：**韵母**（``JD_Y2K``，一个键多个韵母就都列出来；ü 显示为 ü）；
 * 绿色：**笔形**（``JD_B`` 的五个笔画）与**形简/字根**（``--shape-dict`` 给的
-  纯形码表里的部件，显示部件 + 码的剩余字母，如 ``贝o`` = 先按 a 再按 o）。
+  纯形码表里的部件，深绿是部件、浅绿是码的剩余字母，如 ``贝o`` = 先按 A 再按 O）。
 
 用法::
 
@@ -37,11 +38,12 @@ KEYBOARDS = {
     'colemak': ['qwfpgjluy;', 'arstdhneio', 'zxcvbkm'],
 }
 
-# 配色（跟另外两个方案的图一致：灰键名 / 红声母 / 蓝韵母 / 绿笔形）
-COLOR_KEY = (110, 110, 110)
-COLOR_SHENG = (208, 32, 32)
-COLOR_YUN = (24, 96, 200)
-COLOR_SHAPE = (24, 150, 60)
+# 配色：黑键名 / 红声母 / 蓝韵母 / 绿笔形与字根
+COLOR_KEY = (0, 0, 0)          # 键帽字：黑
+COLOR_SHENG = (200, 40, 40)
+COLOR_YUN = (40, 100, 200)
+COLOR_SHAPE = (30, 140, 60)
+COLOR_SHAPE_REST = (130, 195, 150)
 COLOR_BORDER = (40, 40, 40)
 COLOR_BG = (255, 255, 255)
 
@@ -67,9 +69,14 @@ def load_shape_items(path, layout):
     return items
 
 
-def draw_rounded(draw, box, radius, outline, width, fill):
-    draw.rounded_rectangle(box, radius=radius, outline=outline, width=width,
-                           fill=fill)
+def draw_shape_item(d, x, y, text, rest, f_item, f_rest):
+    """画一个部件：深绿的部件 + 浅绿的剩余码。返回总宽度。"""
+    d.text((x, y), text, font=f_item, fill=COLOR_SHAPE)
+    w = d.textlength(text, font=f_item)
+    if rest:
+        d.text((x + w, y), rest, font=f_rest, fill=COLOR_SHAPE_REST)
+        w += d.textlength(rest, font=f_rest)
+    return w
 
 
 def main():
@@ -84,28 +91,27 @@ def main():
                     help='纯形码表（<name>.shape.dict.yaml），用来画形简/字根')
     ap.add_argument('--font', default=FONT_DEFAULT)
     ap.add_argument('--font-bold', default=FONT_BOLD_DEFAULT)
-    ap.add_argument('--max-items', type=int, default=6,
-                    help='每个键最多画几个形简/字根（默认 %(default)s）')
+    ap.add_argument('--max-items', type=int, default=4,
+                    help='每个键最多画几个字根（默认 %(default)s）')
     ap.add_argument('--scale', type=float, default=1.0, help='整体缩放')
     args = ap.parse_args()
 
     layout = lib.load_layout(args.layout)
     rows = (args.keyboard.split('|') if '|' in args.keyboard
             else KEYBOARDS.get(args.keyboard, KEYBOARDS['qwerty']))
-    if isinstance(rows, str):
-        sys.exit('未知键盘：%s（可用 qwerty / colemak 或三行字母）' % args.keyboard)
 
     # ---- 键位表 ----
-    sheng = {}                                  # 键 -> [声母...]
+    sheng = {}                                  # 键 -> [声母...]（去掉与键名相同的）
     for s, keys in layout.JD_S2K.items():
         if s in layout.JD_S2K_YUN:              # 有规则的声母单独处理
             continue
         for k in keys:
-            sheng.setdefault(k, []).append(s)
+            if s != k:                          # 键名本身就是它，不重复画
+                sheng.setdefault(k, []).append(s)
     for s, rules in layout.JD_S2K_YUN.items():
         for keys, _yuns in rules:
             for k in keys:
-                if s not in sheng.get(k, []):
+                if s != k and s not in sheng.get(k, []):
                     sheng.setdefault(k, []).append(s)
     yun = {}                                    # 键 -> [韵母...]
     for y, keys in layout.JD_Y2K.items():
@@ -118,17 +124,39 @@ def main():
 
     # ---- 画布几何 ----
     s = args.scale
-    key_w, key_h, gap = 150 * s, 140 * s, 12 * s
-    margin = 28 * s
+    key_w, key_h, gap = 160 * s, 160 * s, 14 * s
+    margin = 26 * s
     stagger = (key_w + gap) / 2
     width = int(margin * 2 + max(len(r) for r in rows) * (key_w + gap) - gap)
     height = int(margin * 2 + len(rows) * (key_h + gap) - gap)
     img = Image.new('RGB', (width, height), COLOR_BG)
     d = ImageDraw.Draw(img)
-    f_key = ImageFont.truetype(args.font, int(24 * s))
-    f_sheng = ImageFont.truetype(args.font_bold, int(26 * s))
-    f_yun = ImageFont.truetype(args.font, int(21 * s))
-    f_shape = ImageFont.truetype(args.font, int(18 * s))
+    f_key = ImageFont.truetype(args.font, int(34 * s))
+    f_sheng = ImageFont.truetype(args.font_bold, int(30 * s))
+    f_stroke = ImageFont.truetype(args.font, int(30 * s))
+    f_yun = ImageFont.truetype(args.font, int(36 * s))
+    f_item = ImageFont.truetype(args.font, int(30 * s))
+    f_rest = ImageFont.truetype(args.font, int(26 * s))
+    pad = 11 * s
+    pad_bottom = 20 * s            # 底部两块（韵母 / 字根）离键帽底边的距离
+    line_h = 40 * s                # 韵母行高
+    item_h = 34 * s                # 字根行高
+
+    def wrap(items, font, limit, sep=' '):
+        """按宽度贪心折行（每项之间 sep）。"""
+        lines, cur, w = [], [], 0
+        for it in items:
+            iw = d.textlength(it, font=font)
+            add = iw + (d.textlength(sep, font=font) if cur else 0)
+            if cur and w + add > limit:
+                lines.append(cur)
+                cur, w = [it], iw
+            else:
+                cur.append(it)
+                w += add
+        if cur:
+            lines.append(cur)
+        return lines
 
     for r, row in enumerate(rows):
         x0 = margin + stagger * r
@@ -136,53 +164,53 @@ def main():
         for c, letter in enumerate(row):
             x = x0 + (key_w + gap) * c
             box = (x, y0, x + key_w, y0 + key_h)
-            has_content = any(letter in t for t in
-                              (sheng, yun, stroke, shape))
-            if not has_content:
-                continue
-            draw_rounded(d, box, 12 * s, COLOR_BORDER, max(1, int(2 * s)),
-                         COLOR_BG)
-            pad = 10 * s
-            # 键名（左上）
-            d.text((x + pad, y0 + pad), letter, font=f_key, fill=COLOR_KEY)
-            # 声母（右上）
+            if not any(letter in t for t in (sheng, yun, stroke, shape)):
+                continue                        # 这个键没内容（如 keytao 的 ;）
+            d.rounded_rectangle(box, radius=12 * s, outline=COLOR_BORDER,
+                                width=max(1, int(2 * s)), fill=COLOR_BG)
+            # 键名（左上，灰大写）
+            d.text((x + pad, y0 + pad - 4 * s), letter.upper(), font=f_key,
+                   fill=COLOR_KEY)
+            # 右上：声母（红大写；zh/ch/sh 小写）+ 基础笔画（绿）
+            ty = y0 + pad
             if sheng.get(letter):
-                d.text((x + key_w - pad, y0 + pad), ' '.join(sheng[letter]),
-                       font=f_sheng, fill=COLOR_SHENG, anchor='ra')
-            # 韵母（下方，左对齐换行）
-            lines = []
-            cur = ''
-            for y in yun.get(letter, []):
-                cand = (cur + ' ' + y).strip()
-                if cur and d.textlength(cand, font=f_yun) > key_w - 2 * pad:
-                    lines.append(cur)
-                    cur = y
-                else:
-                    cur = cand
-            if cur:
-                lines.append(cur)
-            ty = y0 + key_h - pad - len(lines) * (24 * s)
-            for line in lines:
-                d.text((x + pad, ty), line, font=f_yun, fill=COLOR_YUN)
-                ty += 24 * s
-            # 笔形 + 形简/字根（中上部，绿色）
-            items = list(stroke.get(letter, []))
-            items += ['%s%s' % (t, rest) for t, rest in
-                      shape.get(letter, [])[:args.max_items]]
-            limit = x + key_w - pad
-            line_h = 22 * s
-            bottom = y0 + key_h - pad - len(lines) * 24 * s - line_h
-            sx, sy = x + pad, y0 + 44 * s
-            for it in items:
-                if d.textlength(it, font=f_shape) > key_w - 2 * pad:
-                    continue                     # 太长的部件跳过，别溢出去
-                w = d.textlength(it + ' ', font=f_shape)
-                if sx + w > limit:
-                    sx, sy = x + pad, sy + line_h
-                if sy > bottom:
-                    break
-                d.text((sx, sy), it, font=f_shape, fill=COLOR_SHAPE)
-                sx += w
+                label = ' '.join(t if len(t) > 1 else t.upper()
+                                 for t in sheng[letter])
+                d.text((x + key_w - pad, ty), label, font=f_sheng,
+                       fill=COLOR_SHENG, anchor='ra')
+                ty += 32 * s
+            if stroke.get(letter):
+                d.text((x + key_w - pad, ty), ' '.join(stroke[letter]),
+                       font=f_stroke, fill=COLOR_SHAPE, anchor='ra')
+            # 下方：韵母（蓝，自动 1~2 行，左对齐）
+            if yun.get(letter):
+                lines = wrap(yun[letter], f_yun, key_w - 2 * pad)[:2]
+                ty = y0 + key_h - pad_bottom - len(lines) * line_h
+                for line in lines:
+                    d.text((x + pad, ty), ' '.join(line), font=f_yun,
+                           fill=COLOR_YUN)
+                    ty += line_h
+            # 下方：字根（绿，底对齐居中；深绿部件 + 浅绿剩余码）
+            elif shape.get(letter):
+                items = shape[letter][:args.max_items]
+                items = [(t, rest) for t, rest in items
+                         if d.textlength(t + rest, font=f_item) <= key_w - 2 * pad]
+                lines = wrap([t + rest for t, rest in items], f_item,
+                             key_w - 2 * pad, sep='  ')
+                ty = y0 + key_h - pad_bottom - len(lines) * item_h
+                for line in lines:
+                    tw = sum(d.textlength(t + rest, font=f_item)
+                             for t, rest in items
+                             if t + rest in line) + \
+                        (len(line) - 1) * d.textlength('  ', font=f_item)
+                    sx = x + (key_w - tw) / 2
+                    for t, rest in items:
+                        if t + rest not in line:
+                            continue
+                        draw_shape_item(d, sx, ty, t, rest, f_item, f_rest)
+                        sx += d.textlength(t + rest, font=f_item) + \
+                            d.textlength('  ', font=f_item)
+                    ty += item_h
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     img.save(args.out)
     print('%s -> %s（%dx%d）' % (layout.name or args.layout, args.out,
