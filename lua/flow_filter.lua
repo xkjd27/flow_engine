@@ -6,7 +6,13 @@
 -- 3. 自动前进：每多一个键（声码或形码），排除所有更短前缀当时的首选，
 --    让首选项前进（细选）；
 -- 4. 手动调序：flow_order 里记录的候选排前面（该 key 有记录时不再自动前进）；
--- 5. 造词模式只按 ` 时：候选里补上最近的造词（注释「最近」），供 = 删除。
+-- 5. 造词模式只按 ` 时：候选里补上最近的造词（注释「最近」），供 = 删除；
+-- 6. 声母键里的标点（`;`）连按两个：插一个标点候选，值取 schema 的
+--    `punctuator/<full_shape|half_shape>/;;`（跟其它标点同一处配置，全角 /
+--    半角各一份；没配就不插）。rime 自带的标点只能处理单字符键
+--    （PunctSegmentor 一次只看一个字符），`;;` 这种多字符标点键到不了
+--    punct 段，所以绕开它，在这里插候选：输入串不动，空格 / 数字上屏标点，
+--    继续打 `;` 还能到 `;;;` 这类码。
 --
 -- 声母键 / 笔形键来自 schema 的 flow_engine/*（见 flow_env.lua），
 -- 每个方案（schema_id）各自一份状态。
@@ -403,6 +409,29 @@ local function filter(translation, env)
             end
         end
     end
+    -- 声母键里的标点连按两个（`;;`）：插标点候选放最前，输入串不动。
+    -- 值 / 全角半角取 schema 的 punctuator 段（`punctuator/<shape>/;;`），
+    -- 写法跟 rime 的标点一样：字符串 / 列表（全部给出来）/ {commit: …} /
+    -- {pair: [a, b]}（只取候选，不做自动上屏那套动作）；注释也照 librime 算
+    -- （〔半角〕/〔全角〕看字符本身）。
+    -- 没配就不插（想关掉就把那条删了），所以 `;;;` 这类码照旧能打。
+    local punct_only, punct_texts
+    if not creating and shape == "" and #input == 2 then
+        local ch = input:sub(1, 1)
+        if ch == input:sub(2, 2) and not ch:match("%a") and
+                flow_env.sound_keys(flow):find(ch, 1, true) then
+            punct_texts = flow_env.punctuation(flow, ectx, input)
+            if punct_texts then
+                punct_only = {}
+                for i = #punct_texts, 1, -1 do
+                    local cand = Candidate("punct", span_start, span_end,
+                                           punct_texts[i], "")
+                    table.insert(chosen, 1, cand)
+                    punct_only[punct_texts[i]] = true
+                end
+            end
+        end
+    end
     -- 形码显示：有候选时接在候选 preedit 上（annotate）；候选全空时
     -- preedit 会退回原始输入，改挂在段的 prompt 上（插在 preedit 结尾）
     local seg = ectx.composition and ectx.composition:back()
@@ -483,7 +512,11 @@ local function filter(translation, env)
     local hint_topup = st.hint_topup
     for i, cand in ipairs(final) do
         local cost
-        if recent and recent[cand.text] then
+        if punct_only and punct_only[cand.text] then
+            -- 连按两个声母键里的标点：标点候选放最前，不参与提示计算
+            cand.comment = flow_env.punct_comment(cand.text)
+            cost = 0
+        elseif recent and recent[cand.text] then
             -- 最近造词：不参与提示计算，注释标「最近」
             cand.comment = "最近"
             cost = math.huge

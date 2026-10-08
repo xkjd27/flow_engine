@@ -23,6 +23,10 @@ git clone --recurse-submodules https://github.com/xkjd27/rime_jd27_flow
 | `flow_engine/shape_keys` | 笔形键，如 `aeiov` |
 | `flow_engine/bindings/promote` | 上调键：正常模式调序，造词入库，声笔调整设 sb（默认「-」） |
 | `flow_engine/bindings/demote` | 降档键：正常模式降档，造词删除，声笔调整设 sbb（默认「=」） |
+| `flow_engine/bindings/prev_page` | 上一页键（不写就不由引擎管，交给方案自己的 key_binder） |
+| `flow_engine/bindings/next_page` | 下一页键（同上） |
+| `flow_engine/page_edge` | 翻页到头（第 1 页再往前 / 最后一页再往后）：`ignore` 吞掉（默认）/ `topup` 顶屏（当前内容上屏，按键继续 → 顺带出标点候选）/ `pass` 交给后面的处理器 |
+| `punctuator/<full_shape\|half_shape>/;;` | 声母键里的标点连按两个（`;;`）给的候选：写法同其它标点（字符串 / 列表全部给出来 / `{commit:}` / `{pair:}`，只取候选、不自动上屏），全角 / 半角各一份；不写就不插 |
 | `flow_order/backend` | 调序库后端：`leveldb`（默认）/ `txt` |
 | `flow_order/name` | 调序库名，默认 `<词库>.order`（如 `xkjd27c_flow.ice.order`） |
 | `flow_order/recent_max` | 最近造词列表上限 |

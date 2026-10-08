@@ -6,8 +6,12 @@
 --   * ` 造词模式、`` 声笔调整模式（见 flow_create / flow_shengbi）
 --   * Tab 次简、动作键（promote / demote 一个键多种场合；键位在 schema 的
 --     flow_engine/bindings 里配）
+--   * 翻页键（prev_page / next_page，到头按 flow_engine/page_edge 处理）
 --   * BackSpace 删形码 / 造词模式下按字删
 --   * 顶功与四码自动上屏
+--
+-- 声母键里的标点（`;`）连按两个给候选 —— 见 flow_filter（标点值取 schema
+-- 的 punctuator 段，全角 / 半角各一份）。
 --
 -- 声母键 / 笔形键来自 schema 的 flow_engine/*（见 flow_env.lua）。
 
@@ -59,6 +63,75 @@ local function commit_current(ctx)
             ctx:clear()
         end
     end
+end
+
+-- 翻页键（schema: flow_engine/bindings/prev_page / next_page）转发给 selector
+-- （它认 Page_Up / Page_Down，翻页标记等行为跟原来的 key_binder 绑定一致），
+-- 翻动了就吞掉按键；没翻动（已经在第一页 / 最后一页）按 flow_engine/page_edge：
+--   ignore  吞掉
+--   topup   顶屏：当前内容上屏，然后这个按键接着往下走（`[` 顺带出「候选）
+--   pass    不顶，直接交给后面的处理器
+-- 标点候选（punct）不归翻页键管：那种时候连按是换标点候选，交给 punctuator。
+-- 返回 true = 这个按键已处理完（调用方 return 1），false = 继续往下走。
+local function page_event(flow, name)
+    local st = state(flow)
+    st.page_events = st.page_events or {}
+    local ev = st.page_events[name]
+    if not ev then
+        ev = KeyEvent(name)
+        st.page_events[name] = ev
+    end
+    return ev
+end
+
+local function selected_index(ctx)
+    local seg = ctx.composition and ctx.composition:back()
+    return seg and seg.selected_index or nil
+end
+
+-- 当前是不是标点候选（punct）：是的话翻页键要让路（连按换候选）
+local function punct_segment(ctx)
+    local seg = ctx.composition and ctx.composition:back()
+    local cand = seg and seg:get_selected_candidate()
+    return cand and cand.type == "punct"
+end
+
+local function page_key(flow, env, ctx, code, is_create)
+    local b = flow_env.bindings(flow)
+    local name
+    if b.prev_page ~= 0 and code == b.prev_page then
+        name = "Page_Up"
+    elseif b.next_page ~= 0 and code == b.next_page then
+        name = "Page_Down"
+    else
+        return false
+    end
+    if not ctx:is_composing() then
+        return false        -- 没组合：`[` 还是出「
+    end
+    if punct_segment(ctx) then
+        return false        -- 标点候选：`[` `]` 连按是换候选
+    end
+    -- 有候选才有页可翻（没候选时 Page_Down 会漏给编辑器/应用）
+    if ctx:has_menu() then
+        local before = selected_index(ctx)
+        env.engine:process_key(page_event(flow, name))
+        if selected_index(ctx) ~= before then
+            return true     -- 翻动了
+        end
+    end
+    -- 到头了。造词模式里顶屏会把造词标记一起上屏，按 ignore 处理
+    local edge = is_create and "ignore" or b.edge
+    if edge == "topup" then
+        if ctx:has_menu() and ctx:get_selected_candidate() then
+            ctx:commit()
+            ctx:set_property(PROP, "")
+            -- 顶屏之后按键继续：`[` 接着出「候选，想打标点随时可选
+            return false
+        end
+        return true
+    end
+    return edge ~= "pass"
 end
 
 -- 把 text 放到 input|shape 的首位；目标位若已被其他候选占据，
@@ -324,6 +397,11 @@ local function processor(key_event, env)
             return 1
         end
         return 2
+    end
+
+    -- 翻页键：能翻就翻，到头按 flow_engine/page_edge（见 page_key）
+    if page_key(flow, env, ctx, code, is_create) then
+        return 1
     end
 
     -- 造词模式：空格/数字用于分词选择；
