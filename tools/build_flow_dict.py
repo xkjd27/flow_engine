@@ -24,7 +24,7 @@
 
 生成规则
 --------
-* 单字：全码（声母+韵母，2 键）+ 1 键声母码；
+* 单字：全码（声母+韵母，2 键），ZiDB 短码长度为 1 的再加 1 键声母码；
 * 词组（键道原版编码）：
   * 2 字：音音全码（如 我们 = ``wu mk``）；
   * 3 字：三个首字母（如 为什么 = ``w u m``）；
@@ -374,7 +374,7 @@ MAX_CHAR_CODE = 6
 
 def build_char_codes(zidb, zidb_static, char_w, char_reading_w, default_weight,
                      shapes=None):
-    """char -> [(全码, 声母码, 权重)]，含 static 音码与多音字。
+    """char -> [(全码, 声母码, 权重, 短码长度)]，含 static 音码与多音字。
 
     权重 = 原版短码长度分层（短码恒大于长码）：
 
@@ -420,19 +420,19 @@ def build_char_codes(zidb, zidb_static, char_w, char_reading_w, default_weight,
             layer = MAX_CHAR_CODE + 1 - min(jd_w, MAX_CHAR_CODE)
             for full, init in variants:
                 weight = layer + dup_frac.get((full + shape, char), 0.0)
-                raw.setdefault(char, []).append((full, init, weight))
+                raw.setdefault(char, []).append((full, init, weight, jd_w))
     for char, code in zidb_static:
-        raw.setdefault(char, []).append((code, code[0], default_weight))
+        raw.setdefault(char, []).append((code, code[0], default_weight, None))
 
     result = {}
     for char, options in raw.items():
         best = {}
-        for full, init, weight in options:
+        for full, init, weight, jd_w in options:
             key = (full, init)
-            if weight > best.get(key, 0.0):
-                best[key] = weight
-        result[char] = [(full, init, weight)
-                        for (full, init), weight in best.items()]
+            if weight > best.get(key, (0.0, None))[0]:
+                best[key] = (weight, jd_w)
+        result[char] = [(full, init, weight, jd_w)
+                        for (full, init), (weight, jd_w) in best.items()]
     return result
 
 
@@ -458,7 +458,7 @@ def auto_reading(word, char_codes):
         options = char_codes.get(ch)
         if not options:
             return None
-        full, init, _ = max(options, key=lambda o: o[2])
+        full, init = max(options, key=lambda o: o[2])[:2]
         reading.append([(full, init)])
     return reading
 
@@ -467,16 +467,16 @@ def auto_reading(word, char_codes):
 # 码表生成
 # ---------------------------------------------------------------------------
 
-def build_danzi(char_codes, initial_weight):
+def build_danzi(char_codes):
+    """单字表：每个读音出全码；短码长度为 1 的读音再加一条 1 键声母码。"""
     entries = {}
     for char, options in char_codes.items():
-        for full, init, weight in options:
+        for full, init, weight, jd_w in options:
             key = (char, full)
             entries[key] = max(entries.get(key, 0.0), weight)
-            if init:
+            if init and jd_w == 1:
                 key = (char, init)
-                entries[key] = max(entries.get(key, 0.0),
-                                   weight * initial_weight)
+                entries[key] = max(entries.get(key, 0.0), weight)
     return entries
 
 
@@ -547,7 +547,7 @@ def build_cizu(word_entries, vocab_entries, char_codes,
 
 def danzi_header(name, title):
     return (
-        '# %s 单字码表（音码 + 1键声母码）\n'
+        '# %s 单字码表（音码全码；短码长度 1 的附 1 键声母码）\n'
         '# 由 tools/build_flow_dict.py 自动生成，请勿手工修改\n'
         '---\n'
         'name: %s.danzi\n'
@@ -655,8 +655,6 @@ def main():
                         help='简码（3 字以上首字母）词频系数（默认 %(default)s）')
     parser.add_argument('--length-weight', type=float, default=0.35,
                         help='词组按字数降权底数：每多 1 字乘一次（默认 %(default)s，1 = 不降权）')
-    parser.add_argument('--initial-weight', type=float, default=1.0,
-                        help='1 键声母码词频系数（默认 %(default)s）')
     parser.add_argument('--default-weight', type=float, default=1.0,
                         help='无权重条目的默认词频（默认 %(default)s）')
     args = parser.parse_args()
@@ -733,7 +731,7 @@ def main():
 
     char_codes = build_char_codes(zidb, zidb_static, char_w,
                                   char_reading_w, args.default_weight, shapes)
-    danzi = build_danzi(char_codes, args.initial_weight)
+    danzi = build_danzi(char_codes)
     if args.no_align_original:
         print('原版首选对齐：已关闭')
     else:
@@ -751,8 +749,8 @@ def main():
 
     os.makedirs(out, exist_ok=True)
     scale = args.weight_scale
-    print('词频缩放系数 %.6g；节奏码 ×%.6g；按字数降权 ×%.6g/字；1 键码 ×%.6g'
-          % (scale, args.abbrev_weight, args.length_weight, args.initial_weight))
+    print('词频缩放系数 %.6g；节奏码 ×%.6g；按字数降权 ×%.6g/字'
+          % (scale, args.abbrev_weight, args.length_weight))
 
     n1 = write_dict(os.path.join(out, '%s.danzi.dict.yaml' % name),
                     danzi_header(name, title), danzi, scale)
