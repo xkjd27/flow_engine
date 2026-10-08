@@ -16,6 +16,8 @@
 --   「候选词 + 空格 + 完整音节」（音码削减过的 pin，如 ``你 ny``），
 --   供 `=` 还原到完整音节时使用（没有记录时回退反查）。
 -- 另有特殊 key "~recent"：最近造词记录（造词模式只按 ` 时列出、= 删除）。
+-- 另一个特殊键不是单个 key：声笔简码覆盖按码存，一码一条 "sbb/<码>"
+-- （值=文本；没有就是不覆盖，回默认表）。
 -- 特殊 key "~secondary"：次简表（码=文本，Tab 学习/用户覆盖）。
 --
 -- 调试用 .custom 切到 txt 即可手改数据。
@@ -28,6 +30,9 @@ local M = {}
 
 local KEY_PREFIX = "ord/"
 local SECONDARY_KEY = "~secondary"
+-- 声笔简码覆盖：内存里是一张 code -> 文本 的表；后端里**一个码一条 key**
+-- （sbb/<码>），set/clear 只动单条，不整表重写。
+local SHENGBI_PREFIX = "sbb/"
 local RECENT_KEY = "~recent"
 
 local function state(flow)
@@ -35,6 +40,7 @@ local function state(flow)
         order = {},
         syllables = {},
         secondary = {},
+        shengbi = {},
         users = 0,
         ready = false,
         backend = "leveldb",
@@ -107,9 +113,15 @@ local function serialize_secondary(st)
     return table.concat(parts, "\t")
 end
 
+-- ---------------- 声笔简码覆盖（后端 key = sbb/<码>） ----------------
+-- 值就是文本；没有这条 key 就是没覆盖（回默认表，见 flow_shengbi）。
+-- 一个码一条 key：声笔码数量多时也只读写单条，内存里 hash 查表 O(1)。
+-- 写入口 save_shengbi 在 save_key 后面（它要用到保存函数）。
+
 -- ---------------- txt 后端 ----------------
 
 local function load_txt(st)
+    st.shengbi = {}
     local f = io.open(st.path, "r")
     if not f then
         return
@@ -123,6 +135,9 @@ local function load_txt(st)
             if #fields >= 2 then
                 if fields[1] == SECONDARY_KEY then
                     parse_secondary(st, table.concat(fields, "\t", 2))
+                elseif fields[1]:sub(1, #SHENGBI_PREFIX) == SHENGBI_PREFIX then
+                    st.shengbi[fields[1]:sub(#SHENGBI_PREFIX + 1)] =
+                        table.concat(fields, "\t", 2)
                 else
                     parse_value(st, fields[1], table.concat(fields, "\t", 2))
                 end
@@ -148,6 +163,14 @@ local function save_txt(st)
     if sec then
         f:write(SECONDARY_KEY, "\t", sec, "\n")
     end
+    local codes = {}
+    for code in pairs(st.shengbi) do
+        codes[#codes + 1] = code
+    end
+    table.sort(codes)
+    for _, code in ipairs(codes) do
+        f:write(SHENGBI_PREFIX, code, "\t", st.shengbi[code], "\n")
+    end
     f:close()
 end
 
@@ -169,6 +192,17 @@ local function load_db(st)
     -- DbAccessor 要先释放，之后 close 才安全
     acc = nil
     collectgarbage()
+
+    st.shengbi = {}
+    local sacc = st.db:query(SHENGBI_PREFIX)
+    if not sacc then
+        return
+    end
+    for k, v in sacc:iter() do
+        st.shengbi[k:sub(#SHENGBI_PREFIX + 1)] = v
+    end
+    sacc = nil
+    collectgarbage()
 end
 
 local function save_key(st, key)
@@ -189,6 +223,23 @@ local function save_key(st, key)
         st.db:update(KEY_PREFIX .. key, value)
     else
         st.db:erase(KEY_PREFIX .. key)
+    end
+end
+
+-- 声笔简码覆盖的单条写入（一个码一条 key）
+local function save_shengbi(st, code)
+    if st.backend == "txt" then
+        save_txt(st)
+        return
+    end
+    if not st.db then
+        return
+    end
+    local text = st.shengbi[code]
+    if text ~= nil then
+        st.db:update(SHENGBI_PREFIX .. code, text)
+    else
+        st.db:erase(SHENGBI_PREFIX .. code)
     end
 end
 
@@ -349,6 +400,50 @@ function M.set_secondary(flow, code, text)
     local st = state(flow)
     st.secondary[code] = text or ""
     save_key(st, SECONDARY_KEY)
+end
+
+-- 声笔简码覆盖：nil = 没有覆盖；"" = 显式取消（盖掉默认表）
+function M.get_shengbi(flow, code)
+    return state(flow).shengbi[code]
+end
+
+-- 记一条声笔简码（`` ` ` 调整模式设的 sb / sbb）；text 为空 = 取消该码
+function M.set_shengbi(flow, code, text)
+    if not code or code == "" then
+        return
+    end
+    local st = state(flow)
+    st.shengbi[code] = text or ""
+    save_shengbi(st, code)
+end
+
+-- 删掉覆盖，回默认表（正常模式按 = 还原）
+function M.clear_shengbi(flow, code)
+    local st = state(flow)
+    if st.shengbi[code] == nil then
+        return
+    end
+    st.shengbi[code] = nil
+    save_shengbi(st, code)
+end
+
+-- 把 text 从声笔简码覆盖里全删掉（同一个词换码时用；与 pin 无关，
+-- 所以造词模式的 remove_word 不会碰 ~shengbi）
+function M.remove_shengbi_word(flow, text)
+    if not text or text == "" then
+        return
+    end
+    local st = state(flow)
+    local hits = {}
+    for code, t in pairs(st.shengbi) do
+        if t == text then
+            st.shengbi[code] = nil
+            hits[#hits + 1] = code
+        end
+    end
+    for _, code in ipairs(hits) do
+        save_shengbi(st, code)
+    end
 end
 
 -- 音码削减过的候选 @ key 上保存的完整音节

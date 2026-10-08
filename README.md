@@ -11,7 +11,7 @@ git clone --recurse-submodules https://github.com/xkjd27/rime_jd27c_flow
 git clone --recurse-submodules https://github.com/xkjd27/rime_jd27_flow
 ```
 
-不用 git 的话，把本仓库 `lua/*.lua` 拷到 `<user>/lua/`：`flow_env.lua`、`flow_codes.lua`、`flow_filter.lua`、`flow_shape.lua`、`flow_order.lua`、`flow_create.lua`、`flow_shapes.lua`、`flow_secondary.lua`。
+不用 git 的话，把本仓库 `lua/*.lua` 拷到 `<user>/lua/`：`flow_env.lua`、`flow_codes.lua`、`flow_shengbi.lua`、`flow_filter.lua`、`flow_shape.lua`、`flow_order.lua`、`flow_create.lua`、`flow_shapes.lua`、`flow_secondary.lua`。
 
 生成码表（在方案仓库根目录）：`python3 engine/tools/build_flow_dict.py --layout layout.py`。
 
@@ -21,10 +21,8 @@ git clone --recurse-submodules https://github.com/xkjd27/rime_jd27_flow
 | --- | --- |
 | `flow_engine/sound_keys` | 声母键，如 `bcdfghjklmnpqrstuwxyz;` |
 | `flow_engine/shape_keys` | 笔形键，如 `aeiov` |
-| `flow_engine/bindings/promote` | 正常模式：调序上调键（默认「-」） |
-| `flow_engine/bindings/demote` | 正常模式：降档延长键（默认「=」） |
-| `flow_engine/bindings/create` | 造词模式：入库键（不写就跟 `promote` 同键） |
-| `flow_engine/bindings/delete` | 造词模式：删除键（不写就跟 `demote` 同键） |
+| `flow_engine/bindings/promote` | 上调键：正常模式调序，造词入库，声笔调整设 sb（默认「-」） |
+| `flow_engine/bindings/demote` | 降档键：正常模式降档，造词删除，声笔调整设 sbb（默认「=」） |
 | `flow_order/backend` | 调序库后端：`leveldb`（默认）/ `txt` |
 | `flow_order/name` | 调序库名，默认 `<词库>.order`（如 `xkjd27c_flow.ice.order`） |
 | `flow_order/recent_max` | 最近造词列表上限 |
@@ -33,6 +31,7 @@ git clone --recurse-submodules https://github.com/xkjd27/rime_jd27_flow
 | `flow_hint/topup` | 顶功提示（⛔️） |
 | `flow_secondary` | 次简开关 |
 | `<词库>.danzi.dict.yaml` | 单字码与权重 |
+| `<词库>.shengbi.dict.yaml` | 声笔简码默认表（sb / sbb；用户覆盖在 flow_order 的 `sbb/<码>`） |
 | `<词库>.shape.dict.yaml` | 形码表 |
 | `<词库>.shape.txt` | 笔形筛选与提示 |
 | `<词库>.secondary.yaml` | 次简默认值 |

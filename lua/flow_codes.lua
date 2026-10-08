@@ -191,6 +191,18 @@ local function build_codes(ctx, text)
     return out
 end
 
+-- 字的首选读音声母键（声笔简码的「声」；取不到返回 nil）
+function M.initial(ctx, ch)
+    local sound = flow_env.sound_keys(ctx) or ""
+    for _, e in ipairs(char_entries(ctx, ch)) do
+        local key = e.code:sub(1, 1)
+        if #key == 1 and sound:find(key, 1, true) then
+            return key
+        end
+    end
+    return nil
+end
+
 -- input 之后还需要输入的声码（按最重读音补全），没有则返回 nil
 function M.next_keys(ctx, text, input)
     -- build_codes 已按（权重降序、码升序）排好：匹配的码里取权重最大、

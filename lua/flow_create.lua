@@ -40,7 +40,7 @@ local MARKERS = { "`", "｀" }
 local function state(flow)
     return flow_env.cache(flow, "create",
                           { on_state = false, saved_auto = true,
-                            restore_pending = false })
+                            restore_pending = false, mode = "create" })
 end
 
 function M.is_trigger(code)
@@ -52,7 +52,7 @@ function M.mark()
     return MARK
 end
 
--- 去掉开头的造词标记（` / ~ / ｀ / ～），去掉一个
+-- 去掉开头的造词标记（` / ｀），去掉一个
 function M.strip_marker(s)
     for _, p in ipairs(MARKERS) do
         if s:sub(1, #p) == p then
@@ -62,6 +62,21 @@ function M.strip_marker(s)
     return s
 end
 
+-- 去掉开头所有标记：造词前缀是 1 个，声笔调整模式是 2 个
+function M.strip_markers(s)
+    local t = M.strip_marker(s)
+    while t ~= s do
+        s = t
+        t = M.strip_marker(s)
+    end
+    return s
+end
+
+-- 当前模式："create"（造词）/ "shengbi"（声笔调整）；只在 active 时有效
+function M.mode(flow)
+    return state(flow).mode or "create"
+end
+
 function M.active(flow, ctx)
     return state(flow).on_state and ctx:get_property(PROP) == "1"
 end
@@ -69,6 +84,7 @@ end
 function M.enter(flow, ctx, mark)
     local st = state(flow)
     st.on_state = true
+    st.mode = "create"
     st.restore_pending = false
     ctx:set_property(PROP, "1")
     local saved = ctx:get_option("_auto_commit")
@@ -76,6 +92,16 @@ function M.enter(flow, ctx, mark)
     ctx:set_option("_auto_commit", false)
     -- 标记进入输入串，组句开头就能看到造词状态
     ctx:push_input(mark or "`")
+end
+
+-- 造词状态下再按一个 `（还没打内容）：切到声笔调整模式，前缀变 ``
+function M.enter_shengbi(flow, ctx)
+    local st = state(flow)
+    st.on_state = true
+    st.mode = "shengbi"
+    st.restore_pending = false
+    ctx:set_property(PROP, "1")
+    ctx:push_input(MARK)
 end
 
 local function restore(flow, ctx)
@@ -89,6 +115,7 @@ end
 
 function M.exit(flow, ctx)
     ctx:set_property(PROP, "")
+    state(flow).mode = "create"
     restore(flow, ctx)
 end
 

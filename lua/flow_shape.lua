@@ -3,8 +3,8 @@
 -- 负责：
 --   * 形码键      -> 输入串只有笔形键时进入输入串，由纯形码表（<词库>.shape）
 --                    匹配；否则存进 flow_shape 属性，由 flow_filter 筛候选
---   * ` 造词模式（见 flow_create）
---   * Tab 次简、动作键调序（promote/demote，造词时 create/delete；键位在 schema 的
+--   * ` 造词模式、`` 声笔调整模式（见 flow_create / flow_shengbi）
+--   * Tab 次简、动作键（promote / demote 一个键多种场合；键位在 schema 的
 --     flow_engine/bindings 里配）
 --   * BackSpace 删形码 / 造词模式下按字删
 --   * 顶功与四码自动上屏
@@ -16,6 +16,7 @@ local order = require("flow_order")
 local shapes = require("flow_shapes")
 local codes = require("flow_codes")
 local create = require("flow_create")
+local shengbi = require("flow_shengbi")
 local secondary = require("flow_secondary")
 
 local PROP = "flow_shape"
@@ -231,11 +232,16 @@ local function processor(key_event, env)
     create.tick(flow, ctx)
     local is_create = create.active(flow, ctx)
 
-    -- `：从空输入进入造词模式（标记进输入串）；
-    -- 造词中再按 ` 视为非法内容：已输内容连同这个 ` 直接上屏（交给标点/编辑器）
+    -- `：从空输入进入造词模式（标记进输入串）；造词中再按一个 ` 且还没打
+    -- 内容就切到声笔调整模式（`` 前缀）；已打内容则视为非法内容：已输内容
+    -- 连同这个 ` 直接上屏（交给标点/编辑器）
     local mark = create.is_trigger(code)
     if mark then
         if is_create then
+            if create.mode(flow) == "create" and ctx.input == mark then
+                create.enter_shengbi(flow, ctx)
+                return 1
+            end
             create.exit(flow, ctx)
             return 2
         end
@@ -324,7 +330,7 @@ local function processor(key_event, env)
     -- 还没打码（只有 `）或无候选时，空格视为非法内容，直接上屏退出
     if is_create then
         if code == 0x20 then
-            local code_part = create.strip_marker(ctx.input)
+            local code_part = create.strip_markers(ctx.input)
             -- 最近造词选中后空格：确认进 context（不上屏、不退出造词），
             -- 状态变成 `` `简直了 ``，之后可以 = 删除或 - 重新按全码入库
             if code_part == "" and ctx:has_menu() and
@@ -355,31 +361,36 @@ local function processor(key_event, env)
         end
     end
 
-    -- 动作键（schema: flow_engine/bindings/*）：正常模式 promote/demote 调序，
-    -- 造词模式 create/delete 入库、删除。默认 create=promote、delete=demote，
-    -- 也就是「-」「=」一个键两种场合。
+    -- 动作键（schema: flow_engine/bindings/*，只有 promote / demote 两个键）：
+    --   正常模式   调序上调 / 降档延长
+    --   造词模式   入库 / 删除
+    --   声笔调整   设为 sb / 设为 sbb
     local b = flow_env.bindings(flow)
     local act
-    if is_create then
-        if b.create ~= 0 and code == b.create then
-            act = "create"
-        elseif b.delete ~= 0 and code == b.delete then
-            act = "delete"
-        end
-    else
-        if b.promote ~= 0 and code == b.promote then
-            act = "promote"
-        elseif b.demote ~= 0 and code == b.demote then
-            act = "demote"
-        end
+    if b.promote ~= 0 and code == b.promote then
+        act = "promote"
+    elseif b.demote ~= 0 and code == b.demote then
+        act = "demote"
     end
     if act then
-        if act == "create" then
-            create.store(flow, ctx)
+        if is_create then
+            if act == "promote" then
+                if create.mode(flow) == "shengbi" then
+                    shengbi.assign(flow, ctx, 1)
+                else
+                    create.store(flow, ctx)
+                end
+            else
+                if create.mode(flow) == "shengbi" then
+                    shengbi.assign(flow, ctx, 2)
+                else
+                    create.delete(flow, ctx)
+                end
+            end
             return 1
         end
-        if act == "delete" then
-            create.delete(flow, ctx)
+        -- 正常模式的 `=`：当前码是声笔简码且有用户覆盖时，先删覆盖、回默认表
+        if act == "demote" and shengbi.revert(flow, ctx) then
             return 1
         end
         if ctx:has_menu() and ctx:get_selected_candidate() then

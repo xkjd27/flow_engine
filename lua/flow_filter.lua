@@ -15,6 +15,7 @@ local flow_env = require("flow_env")
 local order = require("flow_order")
 local shapes = require("flow_shapes")
 local codes = require("flow_codes")
+local shengbi = require("flow_shengbi")
 local create = require("flow_create")
 local secondary = require("flow_secondary")
 
@@ -183,6 +184,12 @@ local function apply_hint(st, flow, cand, input, shape, base, excluded,
     if not st.hint_on or cand.text == current_top then
         return nil
     end
+    -- 声笔笔候选：整串码命中的不给提示；sb 码下拉出来的 sbb（假装补全）
+    -- 注释里已经写了还差的笔形键，返回它当提示长度参与排序
+    if cand.type == "shengbi" then
+        local rest = cand.comment
+        return (rest ~= nil and rest ~= "" and rest) or nil
+    end
     local hint = codes.next_keys(flow, cand.text, input)
     if not hint and st.hint_shape then
         hint = shape_hint(flow, cand, input, shape, base, excluded, current_top,
@@ -263,9 +270,41 @@ local function filter(translation, env)
     -- 当 key：造词模式下已确认的段不该参与当前段的候选和排除
     local code_text = input:sub(span_start + 1, span_end)
     if creating then
-        code_text = create.strip_marker(code_text)
+        code_text = create.strip_markers(code_text)
     end
     local key = code_text .. "|" .. shape
+    -- 声笔笔（sb / sbb / sbbb…）：一声母键 + 笔形键时跳过形码筛选，直接查
+    -- <词库>.shengbi.dict.yaml。命中之外，把「这个码再补一个笔形键」的
+    -- sbb 也一起列出来（每个码最多 5 个），注释里给还差的笔形键，假装有
+    -- 自动补全；表里/覆盖里都没有就照常筛。
+    if not creating and #code_text == 1 and shape ~= "" then
+        local code = code_text .. shape
+        local list = {}
+        local function add(text, rest)
+            local cand = Candidate("shengbi", span_start, span_end, text,
+                                   rest or "")
+            cand.preedit = code_text
+            list[#list + 1] = cand
+        end
+        local hits = shengbi.get(flow, code)
+        if hits then
+            for _, e in ipairs(hits) do
+                add(e.text)
+            end
+        end
+        for more_key in (flow_env.shape_keys(flow) or ""):gmatch(".") do
+            local more = shengbi.get(flow, code .. more_key)
+            if more then
+                for _, e in ipairs(more) do
+                    add(e.text, more_key)
+                end
+            end
+        end
+        if #list > 0 then
+            base = list
+            dict_words = {}
+        end
+    end
     -- 自造词补全：自造词只存在 pin 里，输入同音码下更短/其它形码级别时
     -- 也要能像词库词一样看到它——同音码下 pin 在其它级别的词按 pin 长短
     -- 补进候选（pin 越短越靠前）。不这样做的话，simp 这种词库没兜底的词
@@ -459,8 +498,9 @@ local function filter(translation, env)
                                     excluded, current_top, scratch)
             annotate(cand, shape)
             if creating and hint_input == "" then
-                -- 只有 `：在标点的〔半角〕/〔全角〕提示后补「造词模式」
-                cand.comment = (cand.comment or "") .. "造词"
+                -- 只有 ` / ``：在标点的〔半角〕/〔全角〕提示后补模式名
+                cand.comment = (cand.comment or "") ..
+                    (create.mode(flow) == "shengbi" and "声笔" or "造词")
             end
             if i == 1 and hint_on and hint_topup and no_topup then
                 cand.comment = "⛔️" .. (cand.comment or "")
@@ -494,7 +534,7 @@ local function tags_match(segment, env)
     if segment:has_tag("abc") then
         return true
     end
-    -- 造词模式开头那个 ` 是 punct 段，也要过 filter（给它补「造词模式」提示）
+    -- 造词 / 声笔调整模式开头那个 ` 是 punct 段，也要过 filter（给它补模式提示）
     local ectx = env and env.engine and env.engine.context
     return ectx ~= nil and ectx:get_property("flow_create") == "1"
 end
@@ -507,6 +547,7 @@ local function init(env)
     local st = state(flow)
     order.init(flow)
     codes.init(flow)
+    shengbi.init(flow)
     st.ready = shapes.init(flow)
     -- flow_hint 支持两种写法：
     --   flow_hint: false                -- 总开关（提示 + 排序都关）
