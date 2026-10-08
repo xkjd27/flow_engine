@@ -178,9 +178,8 @@ end
 
 -- 给候选写上提示：优先补声码（先音后形），声码已完则给形码（可用
 -- flow_hint/shape 关）；返回提示键串（= 还差几键），供候选排序用
-local function apply_hint(flow, cand, input, shape, base, excluded, current_top,
-                          scratch)
-    local st = state(flow)
+local function apply_hint(st, flow, cand, input, shape, base, excluded,
+                          current_top, scratch)
     if not st.hint_on or cand.text == current_top then
         return nil
     end
@@ -225,6 +224,8 @@ local function filter(translation, env)
     local dict_words = {}
     local base = {}
     local span_start, span_end
+    -- 没有形码时所有候选都过筛，直接跳过逐候选的 shapes.match 调用
+    local match_all = shape == ""
     if creating then
         for cand in translation:iter() do
             local s, e = cand._start or 0, cand._end or 0
@@ -233,7 +234,7 @@ local function filter(translation, env)
             end
             if s == span_start and e == span_end then
                 dict_words[cand.text] = true
-                if shapes.match(flow, cand.text, shape) then
+                if match_all or shapes.match(flow, cand.text, shape) then
                     base[#base + 1] = cand
                 end
             end
@@ -252,7 +253,7 @@ local function filter(translation, env)
             if (cand._start or 0) == span_start and
                     (cand._end or 0) == span_end then
                 dict_words[cand.text] = true
-                if shapes.match(flow, cand.text, shape) then
+                if match_all or shapes.match(flow, cand.text, shape) then
                     base[#base + 1] = cand
                 end
             end
@@ -433,8 +434,14 @@ local function filter(translation, env)
         code:match("^[" .. flow_env.sound_keys(flow) .. "]+$") ~= nil
     -- 按「还差几键」（提示键数）稳定排序：首选 0 键、次简 1 键（Tab），
     -- 其余按提示长度；同样键数的保持原来的权重 / pin 顺序；没有提示的
-    -- （最近造词、推不上去的）放最后
-    local ordered = {}
+    -- （最近造词、推不上去的）放最后。
+    -- 用按 cost 分桶代替逐候选建 {cand,cost,i} 再 sort：桶内自然就是
+    -- 原来的顺序（稳定），只需要对少数几个 cost 排序，也省掉每候选
+    -- 一张表 + 每次比较的函数调用。
+    local buckets = {}
+    local costs = {}
+    local hint_on = st.hint_on
+    local hint_topup = st.hint_topup
     for i, cand in ipairs(final) do
         local cost
         if recent and recent[cand.text] then
@@ -448,14 +455,14 @@ local function filter(translation, env)
             cand.comment = "🔹"
             cost = 1
         else
-            local hint = apply_hint(flow, cand, hint_input, shape, base,
+            local hint = apply_hint(st, flow, cand, hint_input, shape, base,
                                     excluded, current_top, scratch)
             annotate(cand, shape)
             if creating and hint_input == "" then
                 -- 只有 `：在标点的〔半角〕/〔全角〕提示后补「造词模式」
                 cand.comment = (cand.comment or "") .. "造词"
             end
-            if i == 1 and st.hint_on and st.hint_topup and no_topup then
+            if i == 1 and hint_on and hint_topup and no_topup then
                 cand.comment = "⛔️" .. (cand.comment or "")
             end
             if i == 1 then
@@ -466,16 +473,20 @@ local function filter(translation, env)
                 cost = math.huge
             end
         end
-        ordered[#ordered + 1] = { cand = cand, cost = cost, i = i }
-    end
-    table.sort(ordered, function(a, b)
-        if a.cost ~= b.cost then
-            return a.cost < b.cost
+        local b = buckets[cost]
+        if not b then
+            b = {}
+            buckets[cost] = b
+            costs[#costs + 1] = cost
         end
-        return a.i < b.i
-    end)
-    for _, entry in ipairs(ordered) do
-        yield(entry.cand)
+        b[#b + 1] = cand
+    end
+    table.sort(costs)
+    for _, cost in ipairs(costs) do
+        local b = buckets[cost]
+        for j = 1, #b do
+            yield(b[j])
+        end
     end
 end
 

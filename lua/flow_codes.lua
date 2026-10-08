@@ -193,18 +193,28 @@ end
 
 -- input 之后还需要输入的声码（按最重读音补全），没有则返回 nil
 function M.next_keys(ctx, text, input)
-    local best, best_w = nil, nil
+    -- build_codes 已按（权重降序、码升序）排好：匹配的码里取权重最大、
+    -- 同权重取最短；权重一旦低于已选中的最大值，后面不可能再赢，直接停。
+    -- 原来的实现每命中一个码就先 sub 出 rest 再比长度，多一批白造的字符串。
+    local n = #input
+    local best, best_w
     for _, e in ipairs(build_codes(ctx, text)) do
         local code = e.code
-        if #code > #input and code:sub(1, #input) == input then
-            local rest = code:sub(#input + 1)
-            if not best or e.w > best_w or
-                    (e.w == best_w and #rest < #best) then
-                best, best_w = rest, e.w
+        if #code > n and code:sub(1, n) == input then
+            local w = e.w
+            if best_w == nil or w > best_w or
+                    (w == best_w and #code < #best) then
+                best, best_w = code, w
             end
         end
+        if best_w ~= nil and e.w < best_w then
+            break
+        end
     end
-    return best
+    if not best then
+        return nil
+    end
+    return best:sub(n + 1)
 end
 
 -- 词组的方案码（取权重最高的推导码）：2 字音音全码 / 3-4 字首字母 /
