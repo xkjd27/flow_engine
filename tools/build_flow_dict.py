@@ -41,25 +41,26 @@ Use ``--help`` for options.
 """
 
 import argparse
-import importlib.util
 import os
 import re
 import sys
 
+import flow_dict_lib as lib
+
 # ---------------------------------------------------------------------------
 # 布局表与方案参数：从方案仓库的 layout.py 读入（本脚本不读上游仓库）
+#
+# 布局表结构与拼音→音码编码在 flow_dict_lib 里（与 keytao 的转换器共用一份）。
 # ---------------------------------------------------------------------------
 
-LAYOUT_TABLES = ('PY_TRANSFORM', 'PY_SHENG', 'PY_YUN',
-                 'JD_S2K', 'JD_Y2K', 'JD_B')
-LAYOUT_META = ('NAME', 'TITLE', 'SHAPE_SECTION', 'SOURCE', 'OUT')
-
+LAYOUT = None
 PY_TRANSFORM = {}
 PY_SHENG = {}
 PY_YUN = {}
 JD_S2K = {}
 JD_Y2K = {}
 JD_B = {}
+JD_S2K_YUN = {}
 SHAPE_KEYS = ''
 
 
@@ -68,159 +69,75 @@ def load_layout(path):
 
     ``SOURCE`` / ``OUT`` 若是相对路径，按 layout.py 所在目录解析。
     """
-    path = os.path.abspath(path)
-    if not os.path.exists(path):
-        sys.exit('找不到布局表：%s（用 --layout 指定方案 layout.py）' % path)
-    spec = importlib.util.spec_from_file_location('flow_layout', path)
-    module = importlib.util.module_from_spec(spec)
-    try:
-        spec.loader.exec_module(module)
-    except Exception as err:
-        sys.exit('布局表 %s 载入失败：%s' % (path, err))
-    missing = [key for key in LAYOUT_TABLES + LAYOUT_META
-               if not hasattr(module, key)]
-    if missing:
-        sys.exit('布局表 %s 缺少：%s' % (path, ' '.join(missing)))
-    for key in LAYOUT_TABLES:
-        globals()[key] = getattr(module, key)
-    globals()['SHAPE_KEYS'] = ''.join(dict.fromkeys(JD_B.values()))
-
-    base = os.path.dirname(path)
-    meta = {}
-    for key in LAYOUT_META:
-        value = getattr(module, key)
-        if not isinstance(value, str) or not value.strip():
-            sys.exit('布局表 %s 的 %s 应为非空字符串' % (path, key))
-        value = value.strip()
-        if key in ('SOURCE', 'OUT') and not os.path.isabs(value):
-            value = os.path.normpath(os.path.join(base, value))
-        meta[key.lower()] = value
-    return meta
+    global LAYOUT
+    LAYOUT = lib.load_layout(path)
+    for key in lib.LAYOUT_TABLES + lib.LAYOUT_OPTIONAL:
+        globals()[key] = getattr(LAYOUT, key)
+    globals()['SHAPE_KEYS'] = LAYOUT.SHAPE_KEYS
+    return LAYOUT.meta
 
 
 def transform_py(pinyin):
-    pinyin = pinyin.strip().lower()
-    return PY_TRANSFORM.get(pinyin, pinyin)
+    return LAYOUT.transform_py(pinyin)
 
 
 def normalize_py(pinyin):
     """拼音归一化（去声调、统一 ü 拼写），用于按读音对齐权重。"""
-    pinyin = re.sub(r'\d+', '', pinyin.strip().lower())
-    pinyin = pinyin.replace('ü', 'v').replace('u:', 'v')
-    return transform_py(pinyin)
+    return LAYOUT.normalize_py(pinyin)
 
 
 def sheng(py):
-    if py in PY_SHENG:
-        return PY_SHENG[py]
-    if py.startswith('zh'):
-        return 'zh'
-    if py.startswith('ch'):
-        return 'ch'
-    if py.startswith('sh'):
-        return 'sh'
-    return py[0] if py else ''
+    return LAYOUT.sheng(py)
 
 
 def yun(py):
-    if py in PY_YUN:
-        return PY_YUN[py]
-    if py.startswith(('zh', 'ch', 'sh')):
-        return py[2:]
-    return py[1:]
+    return LAYOUT.yun(py)
+
+
+def sheng_keys(s, y):
+    return LAYOUT.sheng_keys(s, y)
+
+
+def yun_keys(y):
+    return LAYOUT.yun_keys(y)
+
+
+def syllable_readings(py):
+    """全拼 -> [(全码, 声母码)]；飞键给多条。"""
+    return LAYOUT.syllable_readings(py)
 
 
 def pinyin2sy(py):
-    """全拼 -> 键道音码（双拼两码），无法映射时返回 None。"""
-    py = transform_py(py)
-    if not py:
-        return None
-    s, y = sheng(py), yun(py)
-    if s not in JD_S2K or y not in JD_Y2K:
-        return None
-    return JD_S2K[s] + JD_Y2K[y]
+    """全拼 -> 键道音码（双拼两码）的第一条，无法映射时返回 None。"""
+    return LAYOUT.pinyin2sy(py)
 
 
 def syllable_reading(py):
-    """全拼 -> (全码, 声母码)，无法映射时返回 None。"""
-    py = transform_py(py)
-    if not py:
-        return None
-    full = pinyin2sy(py)
-    if not full:
-        return None
-    s = sheng(py)
-    if s not in JD_S2K:
-        return None
-    return (full, JD_S2K[s])
+    """全拼 -> (全码, 声母码) 的第一条，无法映射时返回 None。"""
+    return LAYOUT.syllable_reading(py)
 
 
 def static_sound_code(code_str):
     """把静态码（如 ``<sh><i>k<e><丿><丶>``）中的音码部分提取出来。"""
-    tokens = re.findall(r'<[^>]+>|[^<>]', code_str)
-    out = []
-    for token in tokens:
-        if token.startswith('<'):
-            name = token[1:-1]
-            if name in JD_S2K:
-                out.append(JD_S2K[name])
-            elif name in JD_Y2K:
-                out.append(JD_Y2K[name])
-            else:  # 笔画等形码，音码部分结束
-                break
-        else:
-            if token in JD_S2K:
-                out.append(JD_S2K[token])
-            elif token in JD_Y2K:
-                out.append(JD_Y2K[token])
-            else:
-                break
-    return ''.join(out) or None
+    return LAYOUT.static_sound_code(code_str)
+
+
+# 词库读写小工具（与 keytao 转换器共用）
+parse_weight = lib.parse_weight
+format_weight = lib.format_weight
+iter_dict_rows = lib.iter_dict_rows
 
 
 # ---------------------------------------------------------------------------
 # 数据读取
 # ---------------------------------------------------------------------------
 
-def parse_weight(text):
-    try:
-        w = float(text)
-    except ValueError:
-        return None
-    return w if w > 0 else 1.0
-
-
-def format_weight(weight):
-    if weight == int(weight):
-        return str(int(weight))
-    return ('%.6f' % weight).rstrip('0').rstrip('.')
-
-
-def iter_dict_rows(path):
-    """按行产出 Rime 词典条目（跳过 YAML 头与注释）。"""
-    in_header = False
-    with open(path, encoding='utf-8') as f:
-        for line in f:
-            line = line.rstrip('\n')
-            if not line or line.startswith('#'):
-                continue
-            if line == '---':
-                in_header = True
-                continue
-            if line == '...':
-                in_header = False
-                continue
-            if in_header:
-                continue
-            yield line.split('\t')
-
-
 def replace_tokens(code):
     """展开 ``<token>``：与上游 Lambda/JDTools.py 的 replace_static 同序
     （先笔画 JD_B，再韵母 JD_Y2K，再声母 JD_S2K）。"""
     for table in (JD_B, JD_Y2K, JD_S2K):
         for token, key in table.items():
-            code = code.replace('<%s>' % token, key)
+            code = code.replace('<%s>' % token, key[0])
     return code
 
 
@@ -482,10 +399,8 @@ def build_char_codes(zidb, zidb_static, char_w, char_reading_w, default_weight,
         for py, jd_w in pinyins:
             if jd_w <= 0:
                 continue
-            r = syllable_reading(py)
-            if not r:
-                continue
-            by_full.setdefault(r[0] + shape, []).append((rank, char))
+            for full, _init in syllable_readings(py):
+                by_full.setdefault(full + shape, []).append((rank, char))
     for code, items in by_full.items():
         if len(items) < 2:
             continue
@@ -499,13 +414,13 @@ def build_char_codes(zidb, zidb_static, char_w, char_reading_w, default_weight,
         for py, jd_w in pinyins:
             if jd_w <= 0:  # 键道标记的无理读音
                 continue
-            r = syllable_reading(py)
-            if not r:
+            variants = syllable_readings(py)
+            if not variants:
                 continue
-            full, init = r
             layer = MAX_CHAR_CODE + 1 - min(jd_w, MAX_CHAR_CODE)
-            weight = layer + dup_frac.get((full + shape, char), 0.0)
-            raw.setdefault(char, []).append((full, init, weight))
+            for full, init in variants:
+                weight = layer + dup_frac.get((full + shape, char), 0.0)
+                raw.setdefault(char, []).append((full, init, weight))
     for char, code in zidb_static:
         raw.setdefault(char, []).append((code, code[0], default_weight))
 
@@ -522,55 +437,29 @@ def build_char_codes(zidb, zidb_static, char_w, char_reading_w, default_weight,
 
 
 def word_code(reading, abbrev_weight, length_weight=1.0):
-    """reading = [(全码, 声母码)...] -> (code, 权重系数) 或 None。
+    """reading = [(全码, 声母码)...] -> (码, 权重系数) 或 None（见 flow_dict_lib）。"""
+    return lib.word_code(reading, abbrev_weight, length_weight)
 
-    键道原版词组编码：
-      n == 2  音音全码（如 我们 = wumk）
-      n == 3  3 个首字母（如 为什么 = wum）
-      n == 4  4 个首字母（如 万里长城 = wlyy）
-      n >= 5  前 3 个首字母 + 末字首字母（如 吃一堑长一智 = yfq;）
 
-    码连写不分音节（table_translator 直接按整串匹配；
-    脚本翻译器时代的空格分隔已不需要）。
-    length_weight：词组按字数降权，每多 1 字乘一次（n=2 为基准）。
-    """
-    n = len(reading)
-    if n == 2:
-        return (''.join(f for f, _ in reading), 1.0)
-    scale = abbrev_weight * length_weight ** (n - 2)
-    if n in (3, 4):
-        initials = [i for _, i in reading]
-        if not all(initials):
-            return None
-        return (''.join(initials), scale)
-    if n >= 5:
-        head = [i for _, i in reading[:3]]
-        tail = reading[-1][1]
-        if not all(head) or not tail:
-            return None
-        return (''.join(head + [tail]), scale)
-    return None
+def word_codes(reading, abbrev_weight, length_weight=1.0):
+    """reading = 每个字一个变体列表 -> [(码, 系数)]（飞键全组合）。"""
+    return LAYOUT.word_codes(reading, abbrev_weight, length_weight)
 
 
 def syllables_reading(syllables):
-    reading = []
-    for py in syllables:
-        r = syllable_reading(py)
-        if not r:
-            return None
-        reading.append(r)
-    return reading
+    """每个音节的可选读音列表（飞键会多选）。"""
+    return lib.syllables_reading(LAYOUT, syllables)
 
 
 def auto_reading(word, char_codes):
-    """无拼音词：逐字取最高频读音。"""
+    """无拼音词：逐字取最高频读音（同频取先出现的那条）。"""
     reading = []
     for ch in word:
         options = char_codes.get(ch)
         if not options:
             return None
         full, init, _ = max(options, key=lambda o: o[2])
-        reading.append((full, init))
+        reading.append([(full, init)])
     return reading
 
 
@@ -630,9 +519,7 @@ def build_cizu(word_entries, vocab_entries, char_codes,
             entries[key] = weight
 
     def add_reading(word, reading, weight):
-        r = word_code(reading, abbrev_weight, length_weight)
-        if r:
-            code, scale = r
+        for code, scale in word_codes(reading, abbrev_weight, length_weight):
             add(word, code, weight * scale)
 
     for word, syllables, weight in word_entries:

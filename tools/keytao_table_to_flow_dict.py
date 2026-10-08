@@ -1,52 +1,51 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""把键道6（KeyTao）原版固定码表转成「流」方案能用的词库。
+"""键道・函流：从键道6（KeyTao）原版码表 + 冰/袖珍词库生成词库。
+
+一次生成三套词库（共用同一份单字/形码数据）：
+
+* ``<name>.keytao.dict.yaml``  键道6 原版码表转换（保留原版简码层级与顺序）；
+* ``<name>.ice.dict.yaml``     rime-ice（雾凇拼音）词库，按键道6 布局注音；
+* ``<name>.simp.dict.yaml``    袖珍简化字（pinyin_simp）词库，按键道6 布局注音。
+
+共享数据（三套词库都 import 它们）：
+
+* ``<name>.danzi.dict.yaml``   单字音码（由 keytao.single 转换）；
+* ``<name>.shape.dict.yaml``   纯形码条目（由 keytao.supplement 转换）；
+* ``<name>.shape.txt``         每个字的完整形码（运行时筛选/提示用）。
 
 为什么单独一个转换器
 --------------------
-键道6 的词库是**固定码表**：每条只有「字词 + 原码」，没有拼音、没有词频，
-排序也全在原表顺序里。这和 27/27C・流的 ``build_flow_dict.py``（从拼音词库
-造音码、按词频排）是两条路，所以 keytao 方案用这个专用转换器。
+键道6 的词库是**固定码表**：每条只有「字词 + 原码」，没有拼音也没有词频，
+排序全在原表顺序里；这和 27/27C・流的 ``build_flow_dict.py``（从拼音词库造
+音码、按词频排）是两条路。不过拼音→音码的编码规则（含飞键）和词库读写
+小工具是和 27/27C 共用 ``flow_dict_lib`` 的，没有各写一份。
 
-转换规则
---------
-原码 = 音码 + 形码。键道6 的形码键是 ``aiouv``，音码键是其余 21 键，两套
-不相交，所以按「第一个 aiouv 字母」切分即可：
-``音码 = 码[:第一个形码键]``、``形码 = 码[第一个形码键:]``。
-（纯形码条目切出来的音码为空，进纯形码表。）
+键道6 布局
+----------
+* 声母键：sh = ``e``，零声母 = ``x``；zh = ``q``/``f``、ch = ``j``/``w``
+  （外侧韵母用 q/j，内侧用 f/w，见 ``KT_S2K_YUN``）；
+* 韵母键：见 ``KT_Y2K``（uang 是飞键 ``m``/``x``）；
+* 笔形键：``aiouv``（与音码键不相交，所以原码按第一个 aiouv 字母切分即可）。
 
-「流」的 translator 只吃音码（形码由 flow_shape 处理器收集、flow_shapes 按
-``<词库>.shape.txt`` 在运行时筛选），所以生成三份数据：
-
-* ``<name>.dict.yaml``       主词库：只放词组，头部 import 下面两份；
-* ``<name>.danzi.dict.yaml`` 单字表：所有单字条目（音码）；
-* ``<name>.shape.dict.yaml`` 纯形码表：音码为空的条目（code = 形码）；
-* ``<name>.shape.txt``       每个字的完整形码（由单字码的最长形码部分推导），
-                             运行时形码筛选与提示用。
-
-权重：len-dupe（实测还原度最高，见下）
---------------------------------------
-::
-
-    weight = (MAXLEN + 1 - 原码长) + 重码内按原表顺序的降序值
-
-* 先按**原码码长**分层：原码越短权重越高（原版就是「简码在前」）；
-* 只有**同一个生成码**里的多个候选（重码）才做次级排序，顺序取
-  「来源表序 + 表内行序」= 原版顺序；层间距 1.0、重码内差值 < 0.5，不跨层；
-* 不同码、同层 → 权重相同。
-
-实测（489 个 1~2 键样本码，原版 vs flow 同按键）：top1 一致 100%；
-1998 个分层样本码 top1 一致 99.7%。其它策略（len-ice / rank / len-then-rank…）
-都更差，所以只保留 len-dupe。
+权重
+----
+* keytao 变体用 **len-dupe**：``weight = (MAX_CODE + 1 - 原码长) + 重码内按
+  原表顺序的降序值``——先按原码码长分层（原版「简码在前」），只有同一个
+  生成码里的重码才按「表序 + 行序」排；层间距 1.0、重码差值 < 0.5，不跨层。
+  实测：1~2 键样本 top1 还原 100%，分层样本 99.7%。
+* ice / simp 变体用词库自己的词频，词组按字数降权（``LENGTH_WEIGHT``，
+  与 ``build_flow_dict.py`` 的默认一致）。
 
 用法::
 
-    # 默认读 /tmp/KeyTao（不在就 git clone），生成到指定目录
+    # 默认读 /tmp/KeyTao（不在就 git clone）、/tmp/rime-ice
     keytao_table_to_flow_dict.py --out-dir /path/to/rime_keytao_flow/rime
 
-    # 指定 KeyTao 仓库 / 输出名
-    keytao_table_to_flow_dict.py --keytao ~/KeyTao --out-dir ./rime \\
-        --name keytao_orig
+    # 指定 KeyTao / 冰词库 / 袖珍词库 / 输出前缀
+    keytao_table_to_flow_dict.py --keytao ~/KeyTao --rime-ice /tmp/rime-ice \\
+        --pinyin-simp /tmp/rime-pinyin-simp/pinyin_simp.dict.yaml \\
+        --out-dir ./rime --name keytao_flow
 """
 
 import argparse
@@ -55,11 +54,69 @@ import os
 import subprocess
 import sys
 
+import flow_dict_lib as lib
+
 KT_REPO_URL = 'https://github.com/xkinput/KeyTao.git'
 KT_TABLES = ('keytao.single', 'keytao.phrase', 'keytao.supplement')
-SHAPE_KEYS = set('aiouv')       # 键道6 形码键（音码键与它不相交）
+TITLE = '键道・函流'
 MAX_CODE = 6                    # 单字最长原码（音码 2 + 形码 4）
+LENGTH_WEIGHT = 0.35            # 词组按字数降权底数（与 build_flow_dict 默认一致）
 
+# ---------------------------------------------------------------------------
+# 键道6 布局（键道文档：键道音码 / 飞键）
+#   https://keytao-docs.rea.ink/guide/learn-xkjd/phonetics-rules.html
+#   https://keytao-docs.rea.ink/guide/advance-in-xkjd/alt-code.html
+# 与 27C 不同：y 开头的音节按「y + 原韵母」拼（也 = ye、有 = yd、眼 = yf、
+# 样 = yp），不做 ia/ian/iang/iao/ie/iu 的还原；只有 ü 系要还原
+# （ju/qu/xu/yu -> v，yue/yuan/yun 由去声母得到 ue/uan/un）。
+# ---------------------------------------------------------------------------
+
+KT_LAYOUT = lib.from_tables({
+    'PY_TRANSFORM': {
+        'qve': 'que', 'lve': 'lue', 'nve': 'nue', 'jve': 'jue', 'xve': 'xue',
+        'yve': 'yue', 'm': 'en', 'ng': 'eng',
+    },
+    'PY_SHENG': {
+        'a': '~', 'ai': '~', 'an': '~', 'ang': '~', 'ao': '~',
+        'e': '~', 'ei': '~', 'en': '~', 'eng': '~', 'er': '~',
+        'o': '~', 'ou': '~',
+    },
+    'PY_YUN': {
+        'ju': 'v', 'qu': 'v', 'xu': 'v', 'yu': 'v',
+        'a': 'a', 'ai': 'ai', 'an': 'an', 'ang': 'ang', 'ao': 'ao',
+        'e': 'e', 'ei': 'ei', 'en': 'en', 'eng': 'eng', 'er': 'er',
+        'o': 'o', 'ou': 'ou',
+    },
+    'JD_S2K': {
+        'b': 'b', 'p': 'p', 'm': 'm', 'f': 'f', 'd': 'd', 't': 't', 'n': 'n',
+        'l': 'l', 'g': 'g', 'k': 'k', 'h': 'h', 'j': 'j', 'q': 'q', 'x': 'x',
+        'r': 'r', 'z': 'z', 'c': 'c', 's': 's', 'y': 'y', 'w': 'w',
+        'sh': 'e', '~': 'x',
+    },
+    'JD_Y2K': {
+        'a': 's', 'ia': 's', 'ai': 'h', 'an': 'f', 'ang': 'p', 'ao': 'z',
+        'e': 'e', 'ei': 'w', 'en': 'n', 'eng': 'r', 'er': 'j', 'i': 'k',
+        'ian': 'm', 'iang': 'x', 'iao': 'c', 'ie': 'd', 'in': 'b', 'ing': 'g',
+        'iong': 'y', 'iu': 'q', 'o': 'l', 'uo': 'l', 'ong': 'y', 'ou': 'd',
+        'u': 'j', 'v': 'l', 'ua': 'q', 'uai': 'g', 'uan': 't', 'uang': 'mx',
+        'ue': 'h', 'ui': 'b', 'un': 'w',
+    },
+    'JD_S2K_YUN': {
+        'zh': [('q', 'an ang ei en eng u un'),
+               ('f', 'a i ong ou ua uai uan uang ui uo'),
+               ('qf', 'ai ao e')],
+        'ch': [('j', 'ai an ang en eng u un'),
+               ('w', 'a i ong ou ua uai uan uang ui uo'),
+               ('jw', 'ao e')],
+    },
+    'JD_B': {'乛': 'a', '丿': 'u', '丨': 'i', '丶': 'o', '㇐': 'v'},
+}, name='keytao')
+SHAPE_KEYS = KT_LAYOUT.SHAPE_KEYS           # aiouv
+
+
+# ---------------------------------------------------------------------------
+# 键道6 原版码表 -> keytao 变体
+# ---------------------------------------------------------------------------
 
 def find_keytao(path, url=KT_REPO_URL):
     """找 KeyTao 仓库；目录不在就 git clone 一份（自动拉取）。"""
@@ -78,26 +135,12 @@ def find_keytao(path, url=KT_REPO_URL):
 
 def iter_entries(path):
     """产出码表条目 (text, code, row)；row 是表内数据行序（0 起）。"""
-    in_header = False
     row = 0
-    with open(path, encoding='utf-8') as f:
-        for line in f:
-            s = line.rstrip('\n')
-            if not s or s.startswith('#'):
-                continue
-            if s == '---':
-                in_header = True
-                continue
-            if s == '...':
-                in_header = False
-                continue
-            if in_header:
-                continue
-            f2 = s.split('\t')
-            if len(f2) < 2 or not f2[0] or not f2[1]:
-                continue
-            yield f2[0], f2[1], row
-            row += 1
+    for f in lib.iter_dict_rows(path):
+        if len(f) < 2 or not f[0] or not f[1]:
+            continue
+        yield f[0], f[1], row
+        row += 1
 
 
 def split_code(code):
@@ -108,44 +151,8 @@ def split_code(code):
     return code, ''
 
 
-def fmt_weight(w):
-    if w == int(w):
-        return str(int(w))
-    return ('%.8f' % w).rstrip('0').rstrip('.')
-
-
-def write_dict(path, name, header_comment, rows, import_tables=None):
-    with open(path, 'w', encoding='utf-8') as f:
-        f.write(header_comment)
-        if not header_comment.endswith('\n'):
-            f.write('\n')
-        f.write('---\n')
-        f.write('name: %s\n' % name)
-        f.write('version: "1.0"\n')
-        f.write('sort: by_weight\n')
-        f.write('use_preset_vocabulary: false\n')
-        if import_tables:
-            f.write('import_tables:\n')
-            for t in import_tables:
-                f.write('  - %s\n' % t)
-        f.write('...\n')
-        for text, code, weight in rows:
-            f.write('%s\t%s\t%s\n' % (text, code, fmt_weight(weight)))
-
-
-def main():
-    ap = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--keytao', default='/tmp/KeyTao', metavar='DIR',
-                    help='KeyTao 仓库路径（默认 %(default)s；不在则自动 clone）')
-    ap.add_argument('--out-dir', required=True, metavar='DIR',
-                    help='输出目录（方案仓库的 rime/）')
-    ap.add_argument('--name', default='keytao_orig',
-                    help='生成的词库基础名（默认 %(default)s）')
-    args = ap.parse_args()
-
-    repo = find_keytao(args.keytao)
+def build_keytao(repo):
+    """读 keytao.single/phrase/supplement，返回 (词组, 单字, 形码, 完整形码)。"""
     tables = []
     for table in KT_TABLES:
         path = os.path.join(repo, 'rime', table + '.dict.yaml')
@@ -156,12 +163,11 @@ def main():
     if not tables:
         sys.exit('%s/rime 里没有 keytao.single/phrase/supplement' % repo)
 
-    main_rows = {}      # (text, code) -> weight（词组）
-    danzi_rows = {}     # (char, sound) -> weight（单字）
-    shape_rows = {}     # (text, shape) -> weight（纯形码）
+    main_rows = {}      # (词, 音码) -> weight（词组）
+    danzi_rows = {}     # (字, 音码) -> weight（单字）
+    shape_rows = {}     # (词, 形码) -> weight（纯形码）
     shape_full = {}     # 单字 -> 最长形码（推导 shape.txt）
-    meta = {}           # (text, code) -> (原码长, 表序, 行序)，len-dupe 排序用
-    stats = collections.Counter()
+    meta = {}           # (text, code) -> (原码长, 表序, 行序)
 
     def add(dst, text, code, code_len, t_idx, row):
         """同 (text, code) 只留原码最短的一条（层最高）。"""
@@ -187,10 +193,8 @@ def main():
                         shape_full[text] = shape
                 else:
                     add(main_rows, text, sound, len(code), t_idx, row)
-                stats['sound'] += 1
             else:
                 add(shape_rows, text, shape, len(code), t_idx, row)
-                stats['shape'] += 1
             n += 1
         print('  %-20s %6d 条' % (table, n))
 
@@ -203,46 +207,262 @@ def main():
         items.sort(key=lambda it: it[1][1:])        # 表序 + 行序
         total = len(items)
         for rank, (key, m) in enumerate(items):
-            final[key] = m[0] and (MAX_CODE + 1 - m[0]) or 0
-            final[key] += 0.5 * (total - rank) / (total + 1)
+            final[key] = (MAX_CODE + 1 - m[0]) + 0.5 * (total - rank) / (total + 1)
     for dst in (main_rows, danzi_rows, shape_rows):
         for key in dst:
             dst[key] = final[key]
-    dupe = sum(1 for v in by_code.values() if len(v) > 1)
-    print('len-dupe：%d 个生成码，其中重码 %d 个' % (len(by_code), dupe))
+    print('len-dupe：%d 个生成码，其中重码 %d 个'
+          % (len(by_code), sum(1 for v in by_code.values() if len(v) > 1)))
+    return main_rows, danzi_rows, shape_rows, shape_full
+
+
+# ---------------------------------------------------------------------------
+# 拼音词库 -> ice / simp 变体（按键道6 布局注音，飞键全展开）
+# ---------------------------------------------------------------------------
+
+def find_pinyin_simp(home):
+    candidates = [
+        '/usr/share/rime-data/pinyin_simp.dict.yaml',
+        os.path.join(home, '.config', 'rime', 'pinyin_simp.dict.yaml'),
+        os.path.join(home, '.local', 'share', 'fcitx5', 'rime',
+                     'pinyin_simp.dict.yaml'),
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return None
+
+
+def rime_ice_files(repo):
+    cn = os.path.join(repo, 'cn_dicts')
+    return [os.path.join(cn, name) for name in
+            ('base.dict.yaml', 'ext.dict.yaml', 'others.dict.yaml')]
+
+
+def load_words(path):
+    """读拼音词库 -> (words, vocab)。
+
+    * ``词 + 拼音 [+ 权重]``：有拼音的词（两列 = 词 + 拼音，权重缺省 1.0）；
+    * ``词 [+ 权重]``：没有拼音的词，交给自动注音（rime-ice others 的容错词）；
+    * 单字跳过——单字由 danzi 表提供。
+    """
+    words, vocab = [], []
+    for f in lib.iter_dict_rows(path):
+        if len(f) < 2 or not f[0] or not f[1]:
+            if len(f) == 1 and f and f[0] and len(f[0]) > 1:
+                vocab.append((f[0], 1.0))
+            continue
+        text = f[0]
+        if len(text) == 1:
+            continue
+        pinyin, weight = None, None
+        if len(f) >= 3:
+            pinyin = f[1] or None
+            weight = lib.parse_weight(f[2]) if f[2] else None
+        else:                      # 两列：拼音 或 权重
+            w = lib.parse_weight(f[1])
+            if w is not None:
+                weight = w
+            else:
+                pinyin = f[1]
+        if weight is None:
+            weight = 1.0
+        if pinyin:
+            syllables = pinyin.split()
+            if len(syllables) != len(text):
+                continue
+            words.append((text, syllables, weight))
+        else:
+            vocab.append((text, weight))
+    return words, vocab
+
+
+def build_char_codes(danzi_rows):
+    """{字: [(码, 权重)...]}（自动注音用；含 1 键简码与 2 键音码）。"""
+    out = {}
+    for (ch, code), weight in danzi_rows.items():
+        out.setdefault(ch, []).append((code, weight))
+    return out
+
+
+def auto_read(text, char_codes):
+    """无拼音词：逐字取原版简码所指的读音。
+
+    原版简码 = 该字最短的码：1 键（声母键）就取以它开头的音码（如 不 的
+    简码 ``b`` -> 音码 ``bj``，而不是另一读音 fǒu 的 ``fd``）；最短的就是
+    2 键音码时，它本身就是首选读音。
+    """
+    reading = []
+    for ch in text:
+        options = char_codes.get(ch)
+        if not options:
+            return None
+        shortest = min(options, key=lambda o: (len(o[0]), -o[1]))[0]
+        if len(shortest) == 2:
+            full = shortest
+        else:
+            cands = [(c, w) for c, w in options
+                     if len(c) == 2 and c[0] == shortest]
+            if not cands:
+                return None
+            full = max(cands, key=lambda o: o[1])[0]
+        reading.append([(full, full[0])])
+    return reading
+
+
+def encode_words(loaded, char_codes):
+    """(words, vocab) -> {(词, 码): 权重}（飞键全组合，同码取大）。"""
+    out = {}
+
+    def add(text, reading, weight):
+        if not reading:
+            return
+        for code, scale in KT_LAYOUT.word_codes(reading, 1.0, LENGTH_WEIGHT):
+            key = (text, code)
+            w = weight * scale
+            if w > out.get(key, 0.0):
+                out[key] = w
+
+    words, vocab = loaded
+    for text, syllables, weight in words:
+        add(text, lib.syllables_reading(KT_LAYOUT, syllables), weight)
+    for text, weight in vocab:
+        add(text, auto_read(text, char_codes), weight)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 写出
+# ---------------------------------------------------------------------------
+
+def write_dict(path, name, header_comment, rows, import_tables=None):
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(header_comment)
+        if not header_comment.endswith('\n'):
+            f.write('\n')
+        f.write('---\n')
+        f.write('name: %s\n' % name)
+        f.write('version: "1.0"\n')
+        f.write('sort: by_weight\n')
+        f.write('use_preset_vocabulary: false\n')
+        if import_tables:
+            f.write('import_tables:\n')
+            for t in import_tables:
+                f.write('  - %s\n' % t)
+        f.write('...\n')
+        for text, code, weight in rows:
+            f.write('%s\t%s\t%s\n' % (text, code, lib.format_weight(weight)))
+
+
+def variant_header(name, variant, note):
+    return ('# %s 词库（%s）\n'
+            '# 由 tools/keytao_table_to_flow_dict.py 自动生成，请勿手工修改\n'
+            '# 2 字：音音全码；3/4 字：首字母；5 字以上：前三首 + 末一首\n'
+            '---\n'
+            'name: %s.%s\n'
+            'version: "1.2"\n'
+            'sort: by_weight\n'
+            'use_preset_vocabulary: false\n'
+            'import_tables:\n'
+            '  - %s.danzi\n'
+            '  - %s.shape\n'
+            '...\n' % (TITLE, note, name, variant, name, name))
+
+
+def write_variant(out_dir, name, variant, note, rows):
+    path = os.path.join(out_dir, '%s.%s.dict.yaml' % (name, variant))
+    ordered = [(t, c, w) for (t, c), w in
+               sorted(rows.items(), key=lambda kv: (kv[0][1], -kv[1], kv[0][0]))]
+    write_dict(path, '%s.%s' % (name, variant),
+               variant_header(name, variant, note), ordered)
+    return path, len(rows)
+
+
+# ---------------------------------------------------------------------------
+# 主流程
+# ---------------------------------------------------------------------------
+
+def main():
+    home = os.path.expanduser('~')
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--keytao', default='/tmp/KeyTao', metavar='DIR',
+                    help='KeyTao 仓库路径（默认 %(default)s；不在则自动 clone）')
+    ap.add_argument('--rime-ice', default='/tmp/rime-ice', metavar='DIR',
+                    help='rime-ice 仓库路径（默认 %(default)s；不在则跳过 ice 变体）')
+    ap.add_argument('--pinyin-simp', default=None, metavar='FILE',
+                    help='pinyin_simp.dict.yaml 路径（默认自动找）')
+    ap.add_argument('--out-dir', required=True, metavar='DIR',
+                    help='输出目录（方案仓库的 rime/）')
+    ap.add_argument('--name', default='keytao_flow',
+                    help='输出前缀（默认 %(default)s）')
+    args = ap.parse_args()
+
+    name = args.name
+    repo = find_keytao(args.keytao)
+    print('数据源：')
+    print('  KeyTao: %s' % repo)
+
+    print('键道6 原版码表：')
+    main_rows, danzi_rows, shape_rows, shape_full = build_keytao(repo)
 
     os.makedirs(args.out_dir, exist_ok=True)
-    name = args.name
-    main_path = os.path.join(args.out_dir, name + '.dict.yaml')
-    danzi_path = os.path.join(args.out_dir, name + '.danzi.dict.yaml')
-    shape_path = os.path.join(args.out_dir, name + '.shape.dict.yaml')
-    shape_txt = os.path.join(args.out_dir, name + '.shape.txt')
-
-    write_dict(main_path, name,
-               '# %s —— 由 KeyTao（键道6）原版码表生成（词组；单字/形码见同名'
-               ' danzi/shape 表，由 import_tables 引入）' % name,
-               [(t, c, w) for (t, c), w in main_rows.items()],
-               import_tables=[name + '.danzi', name + '.shape'])
-    write_dict(danzi_path, name + '.danzi',
+    write_dict(os.path.join(args.out_dir, name + '.danzi.dict.yaml'),
+               name + '.danzi',
                '# %s 单字表 —— 音码 + len-dupe 权重（原码长分层）' % name,
-               [(t, c, w) for (t, c), w in danzi_rows.items()])
-    write_dict(shape_path, name + '.shape',
+               [(t, c, w) for (t, c), w in
+                sorted(danzi_rows.items(),
+                       key=lambda kv: (kv[0][1], -kv[1], kv[0][0]))])
+    write_dict(os.path.join(args.out_dir, name + '.shape.dict.yaml'),
+               name + '.shape',
                '# %s 纯形码表 —— 音码为空的条目（形码 + len-dupe 权重）' % name,
-               [(t, c, w) for (t, c), w in shape_rows.items()])
-    with open(shape_txt, 'w', encoding='utf-8') as f:
+               [(t, c, w) for (t, c), w in
+                sorted(shape_rows.items(),
+                       key=lambda kv: (kv[0][1], -kv[1], kv[0][0]))])
+    with open(os.path.join(args.out_dir, name + '.shape.txt'),
+              'w', encoding='utf-8', newline='\n') as f:
         f.write('# %s 期望形码（由单字码的最长形码部分推导）\n' % name)
-        for char, shape in shape_full.items():
+        for char, shape in sorted(shape_full.items()):
             if shape:
                 f.write('%s\t%s\n' % (char, shape))
+    print('  单字 %d 条，纯形码 %d 条，期望形码 %d 字'
+          % (len(danzi_rows), len(shape_rows),
+             sum(1 for v in shape_full.values() if v)))
 
-    print('生成：')
-    print('  %s  (%d 条)' % (main_path, len(main_rows)))
-    print('  %s  (%d 条)' % (danzi_path, len(danzi_rows)))
-    print('  %s  (%d 条)' % (shape_path, len(shape_rows)))
-    print('  %s  (%d 字)' % (shape_txt,
-                             sum(1 for v in shape_full.values() if v)))
-    lens = collections.Counter(len(c) for _, c in main_rows)
-    print('  主库音码长度分布:', dict(sorted(lens.items())))
+    # keytao 变体（原版码表）
+    path, n = write_variant(args.out_dir, name, 'keytao',
+                            'KeyTao 键道6 原版码表，len-dupe',
+                            main_rows)
+    print('词库 keytao：%d 条 -> %s' % (n, path))
+
+    # ice / simp 变体（拼音词库按键道6 布局注音）
+    char_codes = build_char_codes(danzi_rows)
+    ice_dir = args.rime_ice
+    if ice_dir and os.path.isdir(ice_dir):
+        loaded = ([], [])
+        for path in rime_ice_files(ice_dir):
+            if os.path.exists(path):
+                words, vocab = load_words(path)
+                print('  %s（%d 词 + %d 无拼音）' % (path, len(words), len(vocab)))
+                loaded[0].extend(words)
+                loaded[1].extend(vocab)
+        rows = encode_words(loaded, char_codes)
+        path, n = write_variant(args.out_dir, name, 'ice',
+                                'rime-ice 雾凇拼音', rows)
+        print('词库 ice：%d 条 -> %s' % (n, path))
+    else:
+        print('未找到 rime-ice（%s），跳过 ice 变体' % ice_dir)
+
+    simp_path = args.pinyin_simp or find_pinyin_simp(home)
+    if simp_path and os.path.exists(simp_path):
+        print('  %s' % simp_path)
+        rows = encode_words(load_words(simp_path), char_codes)
+        path, n = write_variant(args.out_dir, name, 'simp',
+                                '袖珍简化字 pinyin_simp', rows)
+        print('词库 simp：%d 条 -> %s' % (n, path))
+    else:
+        print('未找到 pinyin_simp.dict.yaml，跳过 simp 变体（用 --pinyin-simp 指定）')
 
 
 if __name__ == '__main__':
