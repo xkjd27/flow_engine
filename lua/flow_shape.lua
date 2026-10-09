@@ -67,6 +67,22 @@ local function commit_current(ctx)
     end
 end
 
+-- 输入串是不是「标点打头」的组合（`[`、`【` 这类；`;;` 这种全是声母 /
+-- 笔形键的码不算）——用来决定声母键 / 笔形键是否把标点候选顶屏。
+local function punct_led(flow, input)
+    if not input or input == "" then
+        return false
+    end
+    local keys = (flow_env.sound_keys(flow) or "") ..
+        (flow_env.shape_keys(flow) or "")
+    for c in input:gmatch(".") do
+        if not keys:find(c, 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
 -- 把 text 放到 input|shape 的首位；目标位若已被其他候选占据，
 -- 被顶掉的候选沿它自己的形码串顺延到下一级，递归直到有空位；
 -- 已到完整形码仍无空位则丢弃该 pin（回归自然排序）。
@@ -437,6 +453,21 @@ local function processor(key_event, env)
         return 2
     end
     local key = string.char(code)
+
+    -- 标点组合被字母顶屏：标点键（`[` 这种）给了候选之后，再按声母键 /
+    -- 笔形键应该先把标点顶上去，让这个键开始新输入 —— 否则字母会接在标点
+    -- 后面，变成「nyhz 这种没有候选的死输入。`;;` 这类码里的标点候选
+    -- 不算（输入串全是声母 / 笔形键），照常继续打码；造词模式的 ` 标记
+    -- 是 punct 段，也不能顶。
+    if not is_create and
+            (key:match("^[a-z;]$") or shape_key_set(flow)[key]) and
+            ctx:is_composing() and punct_led(flow, ctx.input) then
+        local cand = ctx:get_selected_candidate()
+        if cand and cand.type == "punct" then
+            commit_current(ctx)
+            ctx:set_property(PROP, "")
+        end
+    end
 
     -- 形码键
     if shape_key_set(flow)[key] then
