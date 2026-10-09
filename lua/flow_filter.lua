@@ -183,7 +183,7 @@ local function shape_hint(flow, cand, input, shape, base, excluded, current_top,
     return nil
 end
 
--- 给候选写上提示：优先补声码（先音后形），声码已完则给形码（可用
+-- 给候选写上提示：只有声码已打完的候选才给（按形码模拟，可用
 -- flow_hint/shape 关）；返回提示键串（= 还差几键），供候选排序用
 local function apply_hint(st, flow, cand, input, shape, base, excluded,
                           current_top, scratch)
@@ -196,8 +196,11 @@ local function apply_hint(st, flow, cand, input, shape, base, excluded,
         local rest = cand.comment
         return (rest ~= nil and rest ~= "" and rest) or nil
     end
-    local hint = codes.next_keys(flow, cand.text, input)
-    if not hint and st.hint_shape then
+    -- 声码没打完的候选不给提示：剩下的声码键不保证能把候选顶到首位
+    -- （同一个全码上还有词库排在前面的字，如 人 rk 排在 任 rk 后面），
+    -- 提示反而误导；声码打完（next_keys 无剩余）才按形码模拟给提示
+    local hint
+    if not codes.next_keys(flow, cand.text, input) and st.hint_shape then
         hint = shape_hint(flow, cand, input, shape, base, excluded, current_top,
                           scratch)
     end
