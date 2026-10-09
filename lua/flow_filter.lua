@@ -321,9 +321,13 @@ local function filter(translation, env)
     -- 补进 base 而不是单放 chosen：shape_hint 只认 base，进 base 才能像
     -- 词库词一样算「还需要按什么」；自造词同样参与自动前进排除，
     -- 多按一个形码就该翻到下一个候选（和词库词一致）。
-    -- 默认权重高：补出来的自造词放在自然候选前面（命中 pin 的再由
-    -- apply_manual_order 提到最前），其余和自然候选一起按提示键数排序。
-    local injected = {}
+    -- 位置看「当前形码长度」和「pin 的形码长度」：还没打到 pin 那一级
+    -- （当前形码更短）时排在词库自然候选后面（post_set，排序时给最后），
+    -- 打到（等于）或超过 pin 级别才排前面——不然更深级的自造词会在短码下
+    -- 压过词库词。多个自造词按 pin 长短从低到高（pins 已按这个排过）。
+    local injected_pre = {}
+    local injected_post = {}
+    local post_set = {}
     if code_text ~= "" and not flow_env.is_shape_input(flow, code_text) then
         local seen = {}
         for _, cand in ipairs(base) do
@@ -337,6 +341,7 @@ local function filter(translation, env)
             return a.key < b.key
         end)
         for _, pin in ipairs(pins) do
+            local reached = #shape >= #pin.shape
             for _, text in ipairs(pin.list) do
                 if not dict_words[text] then
                     -- 本级 pin 也要进 base：模拟更深一级时它仍在候选里，
@@ -346,17 +351,29 @@ local function filter(translation, env)
                         local cand = Candidate("flow_order", span_start,
                                                span_end, text, "")
                         cand.preedit = code_text
-                        injected[#injected + 1] = cand
+                        if reached then
+                            injected_pre[#injected_pre + 1] = cand
+                        else
+                            injected_post[#injected_post + 1] = cand
+                            post_set[text] = true
+                        end
                     end
                 end
             end
         end
     end
-    if #injected > 0 then
-        for _, cand in ipairs(base) do
-            injected[#injected + 1] = cand
+    if #injected_pre > 0 or #injected_post > 0 then
+        local merged = {}
+        for _, cand in ipairs(injected_pre) do
+            merged[#merged + 1] = cand
         end
-        base = injected
+        for _, cand in ipairs(base) do
+            merged[#merged + 1] = cand
+        end
+        for _, cand in ipairs(injected_post) do
+            merged[#merged + 1] = cand
+        end
+        base = merged
     end
     -- 先应用 pin：列表里有、翻译没给的词会被补成候选（造词存的组合词）
     local chosen = apply_manual_order(flow, base, key, span_start, span_end,
@@ -522,6 +539,12 @@ local function filter(translation, env)
         elseif recent and recent[cand.text] then
             -- 最近造词：不参与提示计算，注释标「最近」
             cand.comment = "最近"
+            cost = math.huge
+        elseif post_set[cand.text] and i > 1 then
+            -- 还没打到 pin 级别的自造词：提示照算，但排在自然候选之后
+            apply_hint(st, flow, cand, hint_input, shape, base, excluded,
+                       current_top, scratch)
+            annotate(cand, shape)
             cost = math.huge
         elseif secondary_text and cand.text == secondary_text and i > 1 then
             -- 次简：注释标 🔹（和原版一样），形码照常显示在 preedit 上；

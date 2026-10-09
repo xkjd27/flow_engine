@@ -389,6 +389,11 @@ function M.get(flow, key)
     return state(flow).order[key]
 end
 
+-- text 是否还被某个 pin 挂着（不含 ~ 特殊键）；升档让位判断用
+function M.pinned(flow, text)
+    return pinned_anywhere(state(flow), text)
+end
+
 -- text 在 input 下的 pin 级别（形码串；没有 pin 则 nil）
 function M.pin_level(flow, input, text)
     if not input or input == "" or not text or text == "" then

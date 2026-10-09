@@ -205,11 +205,14 @@ local function lower_or_extend(flow, ctx)
         ctx:refresh_non_confirmed_composition()
         return
     end
-    -- 补码升档：本级首位让给下一个候选（`uyhs=` 后重打 `uyhs` 由「事后」接替）
+    -- 补码升档：本级首位让给下一个候选（`uyhs=` 后重打 `uyhs` 由「事后」
+    -- 接替）。只动已经 pin 过的词（含自造词）：词库词没 pin 过就交给自然
+    -- 排序，不往库里写 pin（否则调频会把自带词也入库）。
     local seg = ctx.composition and ctx.composition:back()
     if seg and seg.selected_index == 0 then
         local second = seg:get_candidate_at(1)
-        if second and second.text and second.text ~= "" then
+        if second and second.text and second.text ~= "" and
+                order.pinned(flow, second.text) then
             order.remove_pin(flow, second.text)
             order.insert(flow, key, second.text, 1)
         end
