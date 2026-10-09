@@ -237,6 +237,12 @@ function M.cache(ctx, name, init)
     return slot
 end
 
+-- 每方案一份的静态配置缓存（声母键 / 笔形键字符串与字节集合）。
+-- 放在 caches 里：fini（重新部署 / 切方案）会清掉，配置改了不会用到旧值。
+local function key_cache(ctx)
+    return M.cache(ctx, "keys")
+end
+
 -- 键位表 ---------------------------------------------------------------
 
 -- 键位表 ---------------------------------------------------------------
@@ -257,11 +263,33 @@ local function required_keys(ctx, path, what)
 end
 
 function M.shape_keys(ctx)
-    return required_keys(ctx, "flow_engine/shape_keys", "笔形键")
+    local st = key_cache(ctx)
+    if st.shape == nil then
+        st.shape = required_keys(ctx, "flow_engine/shape_keys", "笔形键") or false
+    end
+    return st.shape or nil
 end
 
 function M.sound_keys(ctx)
-    return required_keys(ctx, "flow_engine/sound_keys", "声母键")
+    local st = key_cache(ctx)
+    if st.sound == nil then
+        st.sound = required_keys(ctx, "flow_engine/sound_keys", "声母键") or false
+    end
+    return st.sound or nil
+end
+
+-- 笔形键的字节集合（键位没配就是空表）："aeiov" -> {[97]=true,…}
+local function shape_bytes(ctx)
+    local st = key_cache(ctx)
+    if not st.shape_bytes then
+        local set = {}
+        local keys = M.shape_keys(ctx) or ""
+        for i = 1, #keys do
+            set[keys:byte(i)] = true
+        end
+        st.shape_bytes = set
+    end
+    return st.shape_bytes
 end
 
 -- 动作键：schema 的 flow_engine/bindings 里配（键名写法同 rime 的 key_binder：
@@ -385,16 +413,19 @@ function M.bindings(ctx)
     return st
 end
 
--- 输入串是否「只有笔形键」（纯笔码）；键位没配就当不是
+-- 输入串是否「只有笔形键」（纯笔码）；键位没配就当不是。
+-- 逐字节查集合，不再每次拼 "^[…]+$" 模式（每条候选路径都会调）。
 function M.is_shape_input(ctx, s)
     if not s or s == "" then
         return false
     end
-    local keys = M.shape_keys(ctx)
-    if not keys then
-        return false
+    local set = shape_bytes(ctx)
+    for i = 1, #s do
+        if not set[s:byte(i)] then
+            return false
+        end
     end
-    return s:match("^[" .. keys .. "]+$") ~= nil
+    return true
 end
 
 return M

@@ -22,11 +22,16 @@ local M = {}
 
 -- 默认表状态只挂 flow_env 的 cache（teardown / 换词库时会被整体清掉重建）
 local function state(ctx)
-    return flow_env.cache(ctx, "shengbi", { codes = {}, ready = false })
+    local st = flow_env.cache(ctx, "shengbi")
+    if st.codes == nil then             -- 没 init 过也当作空表
+        st.codes = {}
+    end
+    return st
 end
 
 function M.init(ctx)
     local st = state(ctx)
+    st.codes = st.codes or {}
     if st.ready then
         return true
     end

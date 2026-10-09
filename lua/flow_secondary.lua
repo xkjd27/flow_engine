@@ -24,8 +24,12 @@ local M = {}
 -- （内置一份就等于偏心某个方案。）
 
 local function state(flow)
-    return flow_env.cache(flow, "secondary",
-                          { enabled = true, defaults = {}, loaded = false })
+    local st = flow_env.cache(flow, "secondary")
+    if st.enabled == nil then           -- 没 init 过也当作开启 + 空默认表
+        st.enabled = true
+        st.defaults = {}
+    end
+    return st
 end
 
 -- 次简默认值来自方案自带的 <词库>.secondary.yaml（扁平「键: 值」，

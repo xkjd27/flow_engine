@@ -19,9 +19,13 @@ local flow_env = require("flow_env")
 local M = {}
 
 local function state(ctx)
-    return flow_env.cache(ctx, "codes",
-                          { char_cache = {}, word_cache = {}, codes = {},
-                            ready = false })
+    local st = flow_env.cache(ctx, "codes")
+    if st.codes == nil then             -- 没 init 过也要能查（当没有码表）
+        st.codes = {}
+        st.char_cache = {}
+        st.word_cache = {}
+    end
+    return st
 end
 
 local function utf8_chars(text)

@@ -26,13 +26,7 @@ local create = require("flow_create")
 local secondary = require("flow_secondary")
 
 local function state(flow)
-    return flow_env.cache(flow, "filter", {
-        ready = false,
-        hint_on = true,
-        hint_shape = true,
-        hint_topup = true,
-        top_cache = {},
-    })
+    return flow_env.cache(flow, "filter")
 end
 
 -- 把手动顺序里的候选提到前面；传了 span 时，列表里有、当前翻译没给的
@@ -43,14 +37,28 @@ local function apply_manual_order(flow, list, key, span_start, span_end, code)
     if not wanted or #wanted == 0 then
         return list
     end
+    -- 文本 -> 列表里第一个该文本的位置：pin 表一般只有几条，建一次索引
+    -- （O(列表)）比每个 pin 词都从头扫一遍列表（O(pin × 列表)）划算，
+    -- 而且 shape_hint 对每个候选都会调到这里。
+    local index = {}
+    for i = 1, #list do
+        local text = list[i].text
+        if index[text] == nil then
+            index[text] = i
+        end
+    end
     local used = {}
     local result = {}
     for _, text in ipairs(wanted) do
-        local found
-        for i, cand in ipairs(list) do
-            if not used[i] and cand.text == text then
-                found = i
-                break
+        local found = index[text]
+        if found and used[found] then
+            -- 同一个词在列表里出现多次：接着往后找没被用过的那个
+            found = nil
+            for i = index[text] + 1, #list do
+                if not used[i] and list[i].text == text then
+                    found = i
+                    break
+                end
             end
         end
         if found then
@@ -88,14 +96,22 @@ local function collect_exclusions(flow, input, shape)
         end
         return st.top_cache[key]
     end
+    -- 前缀串逐级拼（不再每级重造一整串）
+    local base = input .. "|"
+    local p = ""
     for i = 0, #shape - 1 do
-        local t = top_at(input .. "|" .. shape:sub(1, i))
+        if i > 0 then
+            p = p .. shape:sub(i, i)
+        end
+        local t = top_at(base .. p)
         if t then
             excluded[t] = true
         end
     end
+    local pre = ""
     for i = 1, #input - 1 do
-        local t = top_at(input:sub(1, i) .. "|")
+        pre = pre .. input:sub(i, i)
+        local t = top_at(pre .. "|")
         if t then
             excluded[t] = true
         end
@@ -134,51 +150,82 @@ local function build_buckets(flow, base, shape)
     return buckets
 end
 
+-- 某一级（形码前缀 p）会「赢」的候选：前缀相同 = 之前几级跳过的是同一批，
+-- 所以同一前缀对所有候选只有一条路径，一级只算一次（存 scratch.top）。
+-- 原来每个候选走到这一级都要重扫一遍该级的候选表（O(候选×级×表长)），
+-- 现在是 O(级×表长 + 候选×级)。
+local function level_top(scratch, flow, input, shape, p, excluded, current_top)
+    local memo = scratch.top
+    local hit = memo[p]
+    if hit then
+        return hit
+    end
+    local pk = scratch.pkey[p]
+    if not pk then
+        pk = input .. "|" .. p
+        scratch.pkey[p] = pk
+    end
+    local ordered = scratch.ordered[p]
+    if not ordered then
+        ordered = apply_manual_order(flow, scratch.buckets[p], pk)
+        scratch.ordered[p] = ordered
+        scratch.wanted[p] = order.get(flow, pk)
+    end
+    local wanted = scratch.wanted[p]
+    local top
+    if wanted and #wanted > 0 then
+        top = ordered[1]
+    else
+        -- 这一级开始时已经跳过的：更短前缀的排除项 + 路径上每一级的赢家
+        local skip = {}
+        for t in pairs(excluded) do
+            skip[t] = true
+        end
+        if current_top then
+            skip[current_top] = true
+        end
+        local q = p
+        while #q > #shape do
+            q = q:sub(1, #q - 1)
+            local t = memo[q]
+            if t then
+                skip[t.text] = true
+            end
+        end
+        for _, c in ipairs(ordered) do
+            if not skip[c.text] then
+                top = c
+                break
+            end
+        end
+        if not top then
+            top = ordered[1]
+        end
+    end
+    memo[p] = top
+    return top
+end
+
 -- 沿候选的期望形码串模拟自动前进，返回让它成为首选的形码键串
 local function shape_hint(flow, cand, input, shape, base, excluded, current_top, scratch)
     local exp = shapes.expected(flow, cand.text)
     if not exp or exp:sub(1, #shape) ~= shape then
         return nil
     end
-    local skip = {}
-    for t in pairs(excluded) do
-        skip[t] = true
-    end
-    if current_top then
-        skip[current_top] = true
+    if not scratch.buckets then
+        scratch.buckets = build_buckets(flow, base, shape)
     end
     local p = shape
-    local keys = {}
     while #p < #exp do
         p = p .. exp:sub(#p + 1, #p + 1)
-        if not scratch.buckets then
-            scratch.buckets = build_buckets(flow, base, shape)
-        end
-        local list = scratch.buckets[p]
-        if not list then
+        if not scratch.buckets[p] then
             return nil
         end
-        local ordered = apply_manual_order(flow, list, input .. "|" .. p)
-        local wanted = order.get(flow, input .. "|" .. p)
-        local top
-        if wanted and #wanted > 0 then
-            top = ordered[1]
-        else
-            for _, c in ipairs(ordered) do
-                if not skip[c.text] then
-                    top = c
-                    break
-                end
-            end
-            if not top then
-                top = ordered[1]
-            end
-        end
-        keys[#keys + 1] = exp:sub(#p, #p)
+        local top = level_top(scratch, flow, input, shape, p, excluded,
+                              current_top)
         if top.text == cand.text then
-            return table.concat(keys)
+            return p:sub(#shape + 1)
         end
-        skip[top.text] = true
     end
     return nil
 end
@@ -514,12 +561,21 @@ local function filter(translation, env)
 
     -- 提示按键：造词模式用当前段的音码（去掉开头的 `），否则用整段输入
     local hint_input = code_text
-    local scratch = {}
+    local scratch = { pkey = {}, ordered = {}, wanted = {}, top = {} }
     -- 不可顶功提示（原版 ⛔️）：纯音码、不足 4 键、还没形码时，
     -- 再加音码也不会顶功上屏（只会继续延长输入）
     local code = code_text
-    local no_topup = shape == "" and #code >= 1 and #code < 4 and
-        code:match("^[" .. flow_env.sound_keys(flow) .. "]+$") ~= nil
+    local no_topup = false
+    if shape == "" and #code >= 1 and #code < 4 then
+        local sound = flow_env.sound_keys(flow) or ""
+        no_topup = true
+        for i = 1, #code do
+            if not sound:find(code:sub(i, i), 1, true) then
+                no_topup = false
+                break
+            end
+        end
+    end
     -- 按「还差几键」（提示键数）稳定排序：首选 0 键、次简 1 键（Tab），
     -- 其余按提示长度；同样键数的保持原来的权重 / pin 顺序；没有提示的
     -- （最近造词、推不上去的）放最后。
@@ -604,6 +660,18 @@ local function init(env)
         return            -- 方案没配 flow_engine/*：引擎不启用
     end
     local st = state(flow)
+    if st.top_cache == nil then
+        st.top_cache = {}
+    end
+    if st.hint_on == nil then
+        st.hint_on = true
+    end
+    if st.hint_shape == nil then
+        st.hint_shape = true
+    end
+    if st.hint_topup == nil then
+        st.hint_topup = true
+    end
     order.init(flow)
     codes.init(flow)
     shengbi.init(flow)

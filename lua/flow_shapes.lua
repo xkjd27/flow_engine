@@ -10,8 +10,12 @@ local flow_env = require("flow_env")
 local M = {}
 
 local function state(ctx)
-    return flow_env.cache(ctx, "shapes",
-                          { shapes = {}, expected_cache = {}, ready = false })
+    local st = flow_env.cache(ctx, "shapes")
+    if st.shapes == nil then            -- 没 init 过也要能查（预期形码为空）
+        st.shapes = {}
+        st.expected_cache = {}
+    end
+    return st
 end
 
 function M.init(ctx)

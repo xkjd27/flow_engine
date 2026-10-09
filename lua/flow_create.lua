@@ -40,9 +40,7 @@ local TRIGGERS = { [0x60] = "`" }
 local MARKERS = { "`", "｀" }
 
 local function state(flow)
-    return flow_env.cache(flow, "create",
-                          { on_state = false, saved_auto = true,
-                            restore_pending = false, mode = "create" })
+    return flow_env.cache(flow, "create")
 end
 
 function M.is_trigger(code)

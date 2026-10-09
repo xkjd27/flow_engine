@@ -46,16 +46,73 @@ local SHENGBI_PREFIX = "sbb/"
 local RECENT_KEY = "~recent"
 
 local function state(flow)
-    return flow_env.cache(flow, "order", {
-        order = {},
-        syllables = {},
-        secondary = {},
-        shengbi = {},
-        users = 0,
-        ready = false,
-        backend = "leveldb",
-        recent_max = 20,
-    })
+    local st = flow_env.cache(flow, "order")
+    -- 没有 init 过也要能读（冒烟测试直接调 get_secondary / get 这类只读接口）：
+    -- 只检查一次主表，避免每次调用都重建默认表
+    if st.order == nil then
+        st.order = {}
+        st.syllables = {}
+        st.secondary = {}
+        st.shengbi = {}
+        st.pins = {}
+        st.users = st.users or 0
+        if st.backend == nil then
+            st.backend = "leveldb"
+        end
+        if st.recent_max == nil then
+            st.recent_max = 20
+        end
+    end
+    return st
+end
+
+-- pin 索引：音码 -> 该音码下所有 pin 的 key（"码|形码"）。
+-- pins_under 原来要扫全部 pin（用户积多了就是每键 O(全部 pin)），
+-- 建索引后是 O(该音码的 pin)。只在建 / 删 pin key 时维护。
+local function index_put(st, key)
+    local bar = key:find("|", 1, true)
+    if not bar then
+        return                        -- ~recent 这类特殊键没有 "|"，不入索引
+    end
+    local code = key:sub(1, bar - 1)
+    local list = st.pins[code]
+    if not list then
+        list = {}
+        st.pins[code] = list
+    end
+    for i = 1, #list do
+        if list[i] == key then
+            return
+        end
+    end
+    list[#list + 1] = key
+end
+
+local function index_drop(st, key)
+    local bar = key:find("|", 1, true)
+    if not bar then
+        return
+    end
+    local code = key:sub(1, bar - 1)
+    local list = st.pins[code]
+    if not list then
+        return
+    end
+    for i = #list, 1, -1 do
+        if list[i] == key then
+            table.remove(list, i)
+        end
+    end
+    if #list == 0 then
+        st.pins[code] = nil
+    end
+end
+
+local function index_rebuild(st)
+    st.pins = {}
+    for key in pairs(st.order) do
+        index_put(st, key)
+    end
 end
 
 -- text 是否还挂在某个 pin key 下（不含 ~ 特殊键）
@@ -304,12 +361,21 @@ end
 
 function M.init(flow)
     local st = state(flow)
-    st.users = st.users + 1
+    st.users = (st.users or 0) + 1
     if st.ready then
         return
     end
     st.order = {}
     st.syllables = {}
+    st.secondary = {}
+    st.shengbi = {}
+    st.pins = {}
+    if st.recent_max == nil then
+        st.recent_max = 20
+    end
+    if st.backend == nil then
+        st.backend = "leveldb"
+    end
     local backend = flow_env.get_string(flow, "flow_order/backend", "leveldb")
     local name = flow_env.get_string(flow, "flow_order/name", nil)
     if not name then
@@ -355,6 +421,9 @@ function M.init(flow)
             log.warning("flow_order: db backend unavailable, fallback to txt")
         end
     end
+    -- 同步合并前先把 pin 索引建好（apply_sync_record 里的 insert /
+    -- remove_pin 会维护它，索引不存在就漏）
+    index_rebuild(st)
     -- 同步是独立的文本文件，和 order 后端无关（leveldb / txt 都能用）
     if st.sync.enabled then
         local ok, err = pcall(flow_sync.reconcile, st, function(rec)
@@ -444,11 +513,18 @@ function M.pins_under(flow, input)
     if not input or input == "" then
         return {}
     end
+    local st = state(flow)
+    local keys = st.pins[input]
+    if not keys then
+        return {}
+    end
     local prefix = input .. "|"
     local n = #prefix
     local out = {}
-    for key, list in pairs(state(flow).order) do
-        if key:sub(1, n) == prefix then
+    for i = 1, #keys do
+        local key = keys[i]
+        local list = st.order[key]
+        if list and key:sub(1, n) == prefix then
             out[#out + 1] = {
                 key = key,
                 shape = key:sub(n + 1),
@@ -563,6 +639,7 @@ function M.insert(flow, key, text, index, syl)
         st.syllables[key] = st.syllables[key] or {}
         st.syllables[key][text] = syl
     end
+    index_put(st, key)
     save_key(st, key)
     flow_sync.record_pin(st, key, text, index, syl)
 end
@@ -591,6 +668,7 @@ function M.remove(flow, key, text)
     if #list == 0 then
         st.order[key] = nil
         st.syllables[key] = nil
+        index_drop(st, key)
     end
     save_key(st, key)
     if changed and not pinned_anywhere(st, text) then
@@ -634,6 +712,7 @@ function M.remove_word(flow, text)
             if #list == 0 then
                 st.order[key] = nil
                 st.syllables[key] = nil
+                index_drop(st, key)
             end
             save_key(st, key)
         end
@@ -704,6 +783,7 @@ function M.move_down(flow, key, text)
                 if #list == 0 then
                     st.order[key] = nil
                     st.syllables[key] = nil
+                    index_drop(st, key)
                 end
                 save_key(st, key)
                 if not pinned_anywhere(st, text) then

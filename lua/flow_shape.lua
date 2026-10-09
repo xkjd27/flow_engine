@@ -32,7 +32,7 @@ local XK_RETURN = 0xff0d
 local XK_ESCAPE = 0xff1b
 
 local function state(flow)
-    return flow_env.cache(flow, "shape_processor", {})
+    return flow_env.cache(flow, "shape_processor")
 end
 
 -- 本方案的笔形键集合（char -> true），按方案缓存
