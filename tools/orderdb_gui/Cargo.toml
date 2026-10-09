@@ -1,0 +1,13 @@
+[package]
+name = "flow-orderdb"
+version = "0.1.0"
+edition = "2024"
+description = "flow_engine order.userdb 管理工具（Rust + egui）"
+
+[dependencies]
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+libc = "0.2"
+libloading = "0.9"
+
+[profile.release]
+opt-level = 2
