@@ -114,13 +114,15 @@ local function set_segment_text(ctx, seg, text)
     ctx.input = ctx.input   -- 触发重画
 end
 
--- `-` 降档（上调）：把候选从当前级别移走，pin 到更短一级；
---   补全来的词（pin 在别的级别）先 pin 到本级，pin 在更短级别时从
---   它自己的级别再上一级；单字全码（声韵）在最短级别继续削到 1 键简码；
---   已在最短级别（1 键简码）则 pin 在当前位置。
+-- `-` 降档（上调）：把候选 pin 到比**当前输入**更短一级的形码，
+--   不管它原来 pin 在哪个级别（调码跟着输入走，不跟 pin 走，否则
+--   用户打长码按 - 会跳到 pin 级别，输入没有反馈）；
+--   输入里没有形码时：单字声韵（2 键）继续削到 1 键简码；
+--   其它情况 pin 在「音码|」首位（无形码级别）。
 local function promote(flow, ctx)
     local cand = ctx:get_selected_candidate()
-    if not cand or not cand.text or cand.text == "" then
+    if not cand or not cand.text or cand.text == "" or
+            cand.type == "punct" then
         return
     end
     local shape = get_shape(ctx)
@@ -132,17 +134,8 @@ local function promote(flow, ctx)
         order.remove_pin(flow, cand.text)
         order.insert(flow, input .. "|", cand.text, 1)
     elseif shape ~= "" then
-        local target
-        if level == nil or level == shape then
-            -- 普通候选（没 pin）或 pin 就在本级：本级再短一档
-            target = shape:sub(1, -2)
-        elseif #level < #shape then
-            -- 补全来的词（pin 在更短的级别）：从它自己的级别再上一级
-            target = level:sub(1, -2)
-        else
-            -- 补全来的词（pin 在更长的级别）：先 pin 到本级
-            target = shape
-        end
+        -- 以当前输入的形码为基准，再短一档
+        local target = shape:sub(1, -2)
         order.remove_pin(flow, cand.text)
         place(flow, cand.text, input, target)
         ctx:set_property(PROP, target)
@@ -161,12 +154,14 @@ local function promote(flow, ctx)
 end
 
 -- `=` 升档/下调：1 键级别优先用记录的音节还原到声韵（否则反查）；
---   其它情况补下一笔形码并 pin 到更长一级，从词自己的 pin 级别延长
---   （补全来的词 pin 在别的级别，别从当前级别延长把它提上来）；
---   已到完整形码则在它那一级的 key 内下移一位（下调）。
+--   有形码时以**当前输入**的形码为基准补下一笔并 pin 到更长一级
+--   （调码跟着输入走，不跟 pin 走；pin 更短时也从输入这一级延长）；
+--   没有形码时以 pin 级别为基准（没 pin 就从第一笔开始）；
+--   当前输入已到完整形码（不能再延长）则在该级别的 key 内下移一位。
 local function lower_or_extend(flow, ctx)
     local cand = ctx:get_selected_candidate()
-    if not cand or not cand.text or cand.text == "" then
+    if not cand or not cand.text or cand.text == "" or
+            cand.type == "punct" then
         return
     end
     local shape = get_shape(ctx)
@@ -196,7 +191,8 @@ local function lower_or_extend(flow, ctx)
             return
         end
     end
-    local base = level or shape
+    -- 以当前输入的形码为基准；没形码时退回 pin 级别（没 pin 从头开始）
+    local base = (shape ~= "") and shape or (level or "")
     local next = shapes.next_key(flow, cand.text, base)
     if not next then
         if cand.type == "flow_order" then
