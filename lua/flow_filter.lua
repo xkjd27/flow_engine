@@ -1,5 +1,12 @@
 -- 键道 Flow 共享引擎 —— 整段过滤 + 形码筛选 + 手动调序
 --
+-- filter 是一条五段流水线（各阶段见下面的小函数，filter 只负责串联）：
+--   collect   取整段候选 + 形码筛选            -> base
+--   override  声笔覆盖（单声母 + 形码时替换 base）
+--   inject    自造词补全 + pin 排序 + 最近造词 / 次简 / ;; 标点 -> chosen
+--   exclude   自动前进排除 + 全码兜底          -> final（定首选、记 top_cache）
+--   emit      按码长分桶（同码长自造优先）yield；纯笔码输入走另一条早退
+--
 -- 1. 只保留覆盖整段输入（_start==0 且 _end==输入长）的候选；
 -- 2. 按 flow_shape 做形码筛选（规则见 flow_shapes.lua），并把形码显示在
 --    preedit 末尾；
@@ -258,32 +265,22 @@ local function apply_hint(st, flow, cand, input, shape, base, excluded,
     return nil
 end
 
-local function filter(translation, env)
-    local flow = flow_env.of(env)
-    if not flow then                     -- init 没成功：原样放行，别拦候选
-        for cand in translation:iter() do
-            yield(cand)
-        end
-        return
+-- 原样放行：init 没成功时别拦候选
+local function passthrough(translation)
+    for cand in translation:iter() do
+        yield(cand)
     end
-    local st = state(flow)
-    if not st.ready then
-        for cand in translation:iter() do
-            yield(cand)
-        end
-        return
-    end
-    local ectx = env.engine.context
-    local input = ectx.input
-    local input_len = #input
-    local shape = ectx:get_property("flow_shape") or ""
-    local creating = ectx:get_property("flow_create") == "1"
+end
 
-    -- 收集这段 translation 的候选。
-    -- 造词模式下 filter 也会被叫到开头 ` 的 punct 段上，这时候
-    -- composition:back() 是后面的音码段；span 要以这段候选自己的为准，
-    -- 否则会把 pin 候选挂到 ` 段上（preedit/preview 里重复显示）。
-    -- 普通模式照旧要求候选覆盖整段输入。
+-- 收集这段 translation 的候选。
+-- 造词模式下 filter 也会被叫到开头 ` 的 punct 段上，这时候
+-- composition:back() 是后面的音码段；span 要以这段候选自己的为准，
+-- 否则会把 pin 候选挂到 ` 段上（preedit/preview 里重复显示）。
+-- 普通模式照旧要求候选覆盖整段输入。
+-- 返回 base, dict_words；段起止记进 cx.span_start / cx.span_end，
+-- 当前段音码记进 cx.code_text / cx.key（见下）。
+local function collect_base(cx, translation)
+    local flow, shape, creating = cx.flow, cx.shape, cx.creating
     local dict_words = {}
     local base = {}
     local span_start, span_end
@@ -304,14 +301,14 @@ local function filter(translation, env)
         end
         if not span_start then
             -- 这段还没有候选（音码打一半）：退回当前段
-            span_start, span_end = 0, input_len
-            local seg = ectx.composition and ectx.composition:back()
+            span_start, span_end = 0, #cx.input
+            local seg = cx.ectx.composition and cx.ectx.composition:back()
             if seg then
                 span_start, span_end = seg.start, seg._end
             end
         end
     else
-        span_start, span_end = 0, input_len
+        span_start, span_end = 0, #cx.input
         for cand in translation:iter() do
             if (cand._start or 0) == span_start and
                     (cand._end or 0) == span_end then
@@ -322,59 +319,73 @@ local function filter(translation, env)
             end
         end
     end
+    cx.span_start, cx.span_end = span_start, span_end
     -- 当前段的音码（造词模式下去掉开头的 `）。pin / 自动前进 / 补全都用它
     -- 当 key：造词模式下已确认的段不该参与当前段的候选和排除
-    local code_text = input:sub(span_start + 1, span_end)
+    local code_text = cx.input:sub(span_start + 1, span_end)
     if creating then
         code_text = create.strip_markers(code_text)
     end
-    local key = code_text .. "|" .. shape
-    -- 声笔笔（sb / sbb / sbbb…）：一声母键 + 笔形键时跳过形码筛选，直接查
-    -- <词库>.shengbi.dict.yaml。命中之外，把「这个码再补一个笔形键」的
-    -- sbb 也一起列出来（每个码最多 5 个），注释里给还差的笔形键，假装有
-    -- 自动补全；表里/覆盖里都没有就照常筛。
-    if not creating and #code_text == 1 and shape ~= "" then
-        local code = code_text .. shape
-        local list = {}
-        local function add(text, rest)
-            local cand = Candidate("shengbi", span_start, span_end, text,
-                                   rest or "")
-            cand.preedit = code_text
-            list[#list + 1] = cand
-        end
-        local hits = shengbi.get(flow, code)
-        if hits then
-            for _, e in ipairs(hits) do
-                add(e.text)
-            end
-        end
-        for more_key in (flow_env.shape_keys(flow) or ""):gmatch(".") do
-            local more = shengbi.get(flow, code .. more_key)
-            if more then
-                for _, e in ipairs(more) do
-                    add(e.text, more_key)
-                end
-            end
-        end
-        if #list > 0 then
-            base = list
-            dict_words = {}
+    cx.code_text = code_text
+    cx.key = code_text .. "|" .. shape
+    return base, dict_words
+end
+
+-- 声笔笔（sb / sbb / sbbb…）：一声母键 + 笔形键时跳过形码筛选，直接查
+-- <词库>.shengbi.dict.yaml。命中之外，把「这个码再补一个笔形键」的
+-- sbb 也一起列出来（每个码最多 5 个），注释里给还差的笔形键，假装有
+-- 自动补全；表里/覆盖里都没有就照常筛。
+local function apply_shengbi(cx, base, dict_words)
+    if cx.creating or #cx.code_text ~= 1 or cx.shape == "" then
+        return base, dict_words
+    end
+    local code = cx.code_text .. cx.shape
+    local list = {}
+    local function add(text, rest)
+        local cand = Candidate("shengbi", cx.span_start, cx.span_end, text,
+                               rest or "")
+        cand.preedit = cx.code_text
+        list[#list + 1] = cand
+    end
+    local hits = shengbi.get(cx.flow, code)
+    if hits then
+        for _, e in ipairs(hits) do
+            add(e.text)
         end
     end
-    -- 自造词补全：自造词只存在 pin 里，输入同音码下更短/其它形码级别时
-    -- 也要能像词库词一样看到它——同音码下 pin 在其它级别的词按 pin 长短
-    -- 补进候选（pin 越短越靠前）。不这样做的话，simp 这种词库没兜底的词
-    -- 一旦被 = 加长就整个消失。
-    -- 补进 base 而不是单放 chosen：shape_hint 只认 base，进 base 才能像
-    -- 词库词一样算「还需要按什么」；自造词同样参与自动前进排除，
-    -- 多按一个形码就该翻到下一个候选（和词库词一致）。
-    -- 位置看「当前形码长度」和「pin 的形码长度」：还没打到 pin 那一级
-    -- （当前形码更短）时排在词库自然候选后面（post_set，排序时给最后），
-    -- 打到（等于）或超过 pin 级别才排前面——不然更深级的自造词会在短码下
-    -- 压过词库词。多个自造词按 pin 长短从低到高（pins 已按这个排过）。
+    for more_key in (flow_env.shape_keys(cx.flow) or ""):gmatch(".") do
+        local more = shengbi.get(cx.flow, code .. more_key)
+        if more then
+            for _, e in ipairs(more) do
+                add(e.text, more_key)
+            end
+        end
+    end
+    if #list > 0 then
+        return list, {}
+    end
+    return base, dict_words
+end
+
+-- 自造词补全：自造词只存在 pin 里，输入同音码下更短/其它形码级别时
+-- 也要能像词库词一样看到它——同音码下 pin 在其它级别的词按 pin 长短
+-- 补进候选（pin 越短越靠前）。不这样做的话，simp 这种词库没兜底的词
+-- 一旦被 = 加长就整个消失。
+-- 补进 base 而不是单放 chosen：shape_hint 只认 base，进 base 才能像
+-- 词库词一样算「还需要按什么」；自造词同样参与自动前进排除，
+-- 多按一个形码就该翻到下一个候选（和词库词一致）。
+-- 合并位置（没打到 pin 级别的放后，打到的放前）只是稳定排序的基线：
+-- 最终顺序按码长（提示键数）排，同码长自造词优先——深 pin 码长自然靠后，
+-- 同码长自造词压过词库词。多个自造词按 pin 长短从低到高
+-- （pins 已按这个排过）。
+-- 返回 base, self_made（同音码下有 pin 的词，排序时同码长优先）。
+local function inject_self_made(cx, base, dict_words)
+    local flow, shape, code_text = cx.flow, cx.shape, cx.code_text
     local injected_pre = {}
     local injected_post = {}
-    local post_set = {}
+    -- 自造词标记：同音码下有 pin 的词（含词库里也有但被 pin 过的）。
+    -- 排序时同码长（同 cost）自造词优先，见 emit_sorted。
+    local self_made = {}
     if code_text ~= "" and not flow_env.is_shape_input(flow, code_text) then
         local seen = {}
         for _, cand in ipairs(base) do
@@ -390,19 +401,19 @@ local function filter(translation, env)
         for _, pin in ipairs(pins) do
             local reached = #shape >= #pin.shape
             for _, text in ipairs(pin.list) do
+                self_made[text] = true
                 if not dict_words[text] then
                     -- 本级 pin 也要进 base：模拟更深一级时它仍在候选里，
                     -- apply_manual_order 会把它排到当前级别首位，不会重复
                     if not seen[text] and shapes.match(flow, text, shape) then
                         seen[text] = true
-                        local cand = Candidate("flow_order", span_start,
-                                               span_end, text, "")
+                        local cand = Candidate("flow_order", cx.span_start,
+                                               cx.span_end, text, "")
                         cand.preedit = code_text
                         if reached then
                             injected_pre[#injected_pre + 1] = cand
                         else
                             injected_post[#injected_post + 1] = cand
-                            post_set[text] = true
                         end
                     end
                 end
@@ -422,111 +433,110 @@ local function filter(translation, env)
         end
         base = merged
     end
-    -- 先应用 pin：列表里有、翻译没给的词会被补成候选（造词存的组合词）
-    local chosen = apply_manual_order(flow, base, key, span_start, span_end,
-                                      code_text)
-    -- 造词模式还没打码（只有 `）：候选里补上最近的造词，供 = 删除。
-    -- 文本带造词标记（`` `简直了 ``），选中后状态和普通造词选段一致；
-    -- 注释标「最近」，不参与提示计算（见下面 yield 前的分支）
-    local recent
-    if creating and create.strip_marker(input) == "" then
-        local list = order.recent(flow, 8)
-        if #list > 0 then
-            recent = {}
-            for _, word in ipairs(list) do
-                local text = create.mark() .. word
-                recent[text] = true
-                local dup = false
-                for _, cand in ipairs(chosen) do
-                    if cand.text == text then
-                        dup = true
-                        break
-                    end
-                end
-                if not dup then
-                    chosen[#chosen + 1] =
-                        Candidate("flow_order", span_start, span_end, text, "")
-                end
-            end
-        end
-    end
-    -- 次简（原版「二重」）：当前码有次简时放到第 2 位、注释 🔹；
-    -- 不在候选里就注入一个（Tab 学来的可能是词组）
-    local secondary_text
-    if not creating then
-        secondary_text = secondary.get(flow, input .. shape)
-        if secondary_text then
-            local found
-            for i, cand in ipairs(chosen) do
-                if cand.text == secondary_text then
-                    found = i
-                    break
-                end
-            end
-            if not found then
-                local cand =
-                    Candidate("flow_order", span_start, span_end, secondary_text, "")
-                cand.preedit = code_text
-                chosen[#chosen + 1] = cand
-                found = #chosen
-            end
-            if found > 2 then
-                local cand = table.remove(chosen, found)
-                table.insert(chosen, 2, cand)
-            end
-        end
-    end
-    -- 声母键里的标点连按两个（`;;`）：插标点候选放最前，输入串不动。
-    -- 值 / 全角半角取 schema 的 punctuator 段（`punctuator/<shape>/;;`），
-    -- 写法跟 rime 的标点一样：字符串 / 列表（全部给出来）/ {commit: …} /
-    -- {pair: [a, b]}（只取候选，不做自动上屏那套动作）；注释也照 librime 算
-    -- （〔半角〕/〔全角〕看字符本身）。
-    -- 没配就不插（想关掉就把那条删了），所以 `;;;` 这类码照旧能打。
-    local punct_only, punct_texts
-    if not creating and shape == "" and #input == 2 then
-        local ch = input:sub(1, 1)
-        if ch == input:sub(2, 2) and not ch:match("%a") and
-                flow_env.sound_keys(flow):find(ch, 1, true) then
-            punct_texts = flow_env.punctuation(flow, ectx, input)
-            if punct_texts then
-                punct_only = {}
-                for i = #punct_texts, 1, -1 do
-                    local cand = Candidate("punct", span_start, span_end,
-                                           punct_texts[i], "")
-                    table.insert(chosen, 1, cand)
-                    punct_only[punct_texts[i]] = true
-                end
-            end
-        end
-    end
-    -- 形码显示：有候选时接在候选 preedit 上（annotate）；候选全空时
-    -- preedit 会退回原始输入，改挂在段的 prompt 上（插在 preedit 结尾）
-    local seg = ectx.composition and ectx.composition:back()
-    if seg then
-        seg.prompt = (#chosen == 0 and shape ~= "") and (" " .. shape) or ""
-    end
-    if #chosen == 0 then
-        return
-    end
+    return base, self_made
+end
 
-    -- 纯笔码输入：手动 pin 优先，其余保持原顺序，不发音码/形码提示
-    if flow_env.is_shape_input(flow, input) then
-        st.top_cache[key] = chosen[1] and chosen[1].text or nil
-        for idx, cand in ipairs(chosen) do
-            if secondary_text and cand.text == secondary_text and idx > 1 then
-                cand.comment = "🔹"
-            end
-            yield(cand)
-        end
-        return
+-- 造词模式还没打码（只有 `）：候选里补上最近的造词，供 = 删除。
+-- 文本带造词标记（`` `简直了 ``），选中后状态和普通造词选段一致；
+-- 注释标「最近」，不参与提示计算（见 emit_sorted 的分支）。
+-- 返回 chosen, recent。
+local function inject_recent(cx, chosen)
+    if not cx.creating or create.strip_marker(cx.input) ~= "" then
+        return chosen, nil
     end
+    local list = order.recent(cx.flow, 8)
+    if #list == 0 then
+        return chosen, nil
+    end
+    local recent = {}
+    for _, word in ipairs(list) do
+        local text = create.mark() .. word
+        recent[text] = true
+        local dup = false
+        for _, cand in ipairs(chosen) do
+            if cand.text == text then
+                dup = true
+                break
+            end
+        end
+        if not dup then
+            chosen[#chosen + 1] =
+                Candidate("flow_order", cx.span_start, cx.span_end, text, "")
+        end
+    end
+    return chosen, recent
+end
 
-    local excluded = collect_exclusions(flow, code_text, shape)
+-- 次简（原版「二重」）：当前码有次简时放到第 2 位、注释 🔹；
+-- 不在候选里就注入一个（Tab 学来的可能是词组）。
+-- 返回 chosen, secondary_text。
+local function inject_secondary(cx, chosen)
+    if cx.creating then
+        return chosen, nil
+    end
+    local secondary_text = secondary.get(cx.flow, cx.input .. cx.shape)
+    if not secondary_text then
+        return chosen, nil
+    end
+    local found
+    for i, cand in ipairs(chosen) do
+        if cand.text == secondary_text then
+            found = i
+            break
+        end
+    end
+    if not found then
+        local cand =
+            Candidate("flow_order", cx.span_start, cx.span_end, secondary_text, "")
+        cand.preedit = cx.code_text
+        chosen[#chosen + 1] = cand
+        found = #chosen
+    end
+    if found > 2 then
+        local cand = table.remove(chosen, found)
+        table.insert(chosen, 2, cand)
+    end
+    return chosen, secondary_text
+end
 
-    -- 该 key 有手动顺序：pin 的词照常显示（不被自动前进排除），
-    -- 其余候选仍按自动前进排除（否则 pin 一下会把这些候选又放出来）
-    local wanted = order.get(flow, key)
-    local final, current_top
+-- 声母键里的标点连按两个（`;;`）：插标点候选放最前，输入串不动。
+-- 值 / 全角半角取 schema 的 punctuator 段（`punctuator/<shape>/;;`），
+-- 写法跟 rime 的标点一样：字符串 / 列表（全部给出来）/ {commit: …} /
+-- {pair: [a, b]}（只取候选，不做自动上屏那套动作）；注释也照 librime 算
+-- （〔半角〕/〔全角〕看字符本身）。
+-- 没配就不插（想关掉就把那条删了），所以 `;;;` 这类码照旧能打。
+-- 返回 chosen, punct_only。
+local function inject_punct(cx, chosen)
+    if cx.creating or cx.shape ~= "" or #cx.input ~= 2 then
+        return chosen, nil
+    end
+    local ch = cx.input:sub(1, 1)
+    if ch ~= cx.input:sub(2, 2) or ch:match("%a") or
+            not flow_env.sound_keys(cx.flow):find(ch, 1, true) then
+        return chosen, nil
+    end
+    local punct_texts = flow_env.punctuation(cx.flow, cx.ectx, cx.input)
+    if not punct_texts then
+        return chosen, nil
+    end
+    local punct_only = {}
+    for i = #punct_texts, 1, -1 do
+        local cand = Candidate("punct", cx.span_start, cx.span_end,
+                               punct_texts[i], "")
+        table.insert(chosen, 1, cand)
+        punct_only[punct_texts[i]] = true
+    end
+    return chosen, punct_only
+end
+
+-- 自动前进排除 + 全码兜底，定下首选并记 top_cache。
+-- 该 key 有手动顺序：pin 的词照常显示（不被自动前进排除），
+-- 其余候选仍按自动前进排除（否则 pin 一下会把这些候选又放出来）。
+-- 返回 final, current_top, wanted, excluded。
+local function apply_exclusions(cx, chosen)
+    local flow = cx.flow
+    local excluded = collect_exclusions(flow, cx.code_text, cx.shape)
+    local wanted = order.get(flow, cx.key)
     local pinned = {}
     if wanted then
         for _, t in ipairs(wanted) do
@@ -534,15 +544,15 @@ local function filter(translation, env)
         end
     end
     local has_excluded = next(excluded) ~= nil
-    final = {}
+    local final = {}
     local full_code = {}   -- 全码命中但被自动前进排除的，低优先级兜底
     for _, cand in ipairs(chosen) do
         if has_excluded and excluded[cand.text] and not pinned[cand.text] then
             -- 音码已完整 + 形码刚好是完整形码 = 命中全码：无视 auto
             -- advance，补在候选最后（组内保持 chosen 顺序：自造词在前，
             -- 其余按权重序）；纯形码输入不算
-            if shape ~= "" and shapes.expected(flow, cand.text) == shape and
-                    codes.next_keys(flow, cand.text, code_text) == nil then
+            if cx.shape ~= "" and shapes.expected(flow, cand.text) == cx.shape and
+                    codes.next_keys(flow, cand.text, cx.code_text) == nil then
                 full_code[#full_code + 1] = cand
             end
         else
@@ -555,18 +565,41 @@ local function filter(translation, env)
     if #final == 0 then  -- 全被排除则回退，避免空菜单
         final = chosen
     end
-    current_top = final[1].text
+    local current_top = final[1].text
+    cx.st.top_cache[cx.key] = current_top
+    return final, current_top, wanted, excluded
+end
 
-    st.top_cache[key] = current_top
+-- 纯笔码输入：手动 pin 优先，其余保持原顺序，不发音码/形码提示
+local function emit_plain(cx, chosen, secondary_text)
+    cx.st.top_cache[cx.key] = chosen[1] and chosen[1].text or nil
+    for idx, cand in ipairs(chosen) do
+        if secondary_text and cand.text == secondary_text and idx > 1 then
+            cand.comment = "🔹"
+        end
+        yield(cand)
+    end
+end
 
+-- 按码长（还差几键的提示键数）排序：首选 0 键、次简 1 键（Tab），
+-- 其余按提示长度；同码长（同 cost）自造词优先（含还没打到 pin 级别的
+-- 自造词，不再一律沉底——码长了自然靠后，码一样自造在前）；
+-- 同组内保持原来的权重 / pin 顺序（稳定）；没有提示的
+-- （最近造词、推不上去的）放最后，组内同样自造优先。
+-- 用按 cost 分桶代替逐候选建 {cand,cost,i} 再 sort：桶内自然就是
+-- 原来的顺序（稳定），只需要对少数几个 cost 排序，也省掉每候选
+-- 一张表 + 每次比较的函数调用。
+local function emit_sorted(cx, final, base, excluded, current_top, wanted,
+                           self_made, recent, secondary_text, punct_only)
+    local flow, st = cx.flow, cx.st
     -- 提示按键：造词模式用当前段的音码（去掉开头的 `），否则用整段输入
-    local hint_input = code_text
+    local hint_input = cx.code_text
     local scratch = { pkey = {}, ordered = {}, wanted = {}, top = {} }
     -- 不可顶功提示（原版 ⛔️）：纯音码、不足 4 键、还没形码时，
     -- 再加音码也不会顶功上屏（只会继续延长输入）
-    local code = code_text
+    local code = cx.code_text
     local no_topup = false
-    if shape == "" and #code >= 1 and #code < 4 then
+    if cx.shape == "" and #code >= 1 and #code < 4 then
         local sound = flow_env.sound_keys(flow) or ""
         no_topup = true
         for i = 1, #code do
@@ -576,18 +609,19 @@ local function filter(translation, env)
             end
         end
     end
-    -- 按「还差几键」（提示键数）稳定排序：首选 0 键、次简 1 键（Tab），
-    -- 其余按提示长度；同样键数的保持原来的权重 / pin 顺序；没有提示的
-    -- （最近造词、推不上去的）放最后。
-    -- 用按 cost 分桶代替逐候选建 {cand,cost,i} 再 sort：桶内自然就是
-    -- 原来的顺序（稳定），只需要对少数几个 cost 排序，也省掉每候选
-    -- 一张表 + 每次比较的函数调用。
-    local buckets = {}
-    local costs = {}
+    -- 本级 pin 的词也算自造：同码长时优先（首选 i==1 本来就 cost 0，不受影响）
+    if wanted then
+        for _, t in ipairs(wanted) do
+            self_made[t] = true
+        end
+    end
     local hint_on = st.hint_on
     local hint_topup = st.hint_topup
+    local buckets = {}
+    local costs = {}
     for i, cand in ipairs(final) do
         local cost
+        local self_first = false
         if punct_only and punct_only[cand.text] then
             -- 连按两个声母键里的标点：标点候选放最前，不参与提示计算
             cand.comment = flow_env.punct_comment(cand.text)
@@ -596,23 +630,17 @@ local function filter(translation, env)
             -- 最近造词：不参与提示计算，注释标「最近」
             cand.comment = "最近"
             cost = math.huge
-        elseif post_set[cand.text] and i > 1 then
-            -- 还没打到 pin 级别的自造词：提示照算，但排在自然候选之后
-            apply_hint(st, flow, cand, hint_input, shape, base, excluded,
-                       current_top, scratch)
-            annotate(cand, shape)
-            cost = math.huge
         elseif secondary_text and cand.text == secondary_text and i > 1 then
             -- 次简：注释标 🔹（和原版一样），形码照常显示在 preedit 上；
             -- 次简本身就是首选时不标（Tab 仍然上屏它）
-            annotate(cand, shape)
+            annotate(cand, cx.shape)
             cand.comment = "🔹"
             cost = 1
         else
-            local hint = apply_hint(st, flow, cand, hint_input, shape, base,
-                                    excluded, current_top, scratch)
-            annotate(cand, shape)
-            if creating and hint_input == "" then
+            local hint = apply_hint(st, flow, cand, hint_input, cx.shape,
+                                    base, excluded, current_top, scratch)
+            annotate(cand, cx.shape)
+            if cx.creating and hint_input == "" then
                 -- 只有 ` / ``：在标点的〔半角〕/〔全角〕提示后补模式名
                 cand.comment = (cand.comment or "") ..
                     (create.mode(flow) == "shengbi" and "声笔" or "造词")
@@ -627,22 +655,88 @@ local function filter(translation, env)
             else
                 cost = math.huge
             end
+            -- 同码长自造优先（首选保持首位，不参与让位）
+            if i > 1 and self_made[cand.text] then
+                self_first = true
+            end
         end
         local b = buckets[cost]
         if not b then
-            b = {}
+            b = { self = {}, other = {} }
             buckets[cost] = b
             costs[#costs + 1] = cost
         end
-        b[#b + 1] = cand
+        if self_first then
+            b.self[#b.self + 1] = cand
+        else
+            b.other[#b.other + 1] = cand
+        end
     end
     table.sort(costs)
     for _, cost in ipairs(costs) do
         local b = buckets[cost]
-        for j = 1, #b do
-            yield(b[j])
+        for j = 1, #b.self do
+            yield(b.self[j])
+        end
+        for j = 1, #b.other do
+            yield(b.other[j])
         end
     end
+end
+
+local function filter(translation, env)
+    local flow = flow_env.of(env)
+    if not flow then
+        passthrough(translation)         -- init 没成功：原样放行，别拦候选
+        return
+    end
+    local st = state(flow)
+    if not st.ready then
+        passthrough(translation)
+        return
+    end
+    local ectx = env.engine.context
+    local cx = {
+        flow = flow, st = st, ectx = ectx,
+        input = ectx.input,
+        shape = ectx:get_property("flow_shape") or "",
+        creating = ectx:get_property("flow_create") == "1",
+    }
+    -- collect: 整段候选 + 形码筛选；override: 声笔覆盖
+    local base, dict_words = collect_base(cx, translation)
+    base, dict_words = apply_shengbi(cx, base, dict_words)
+
+    -- inject: 自造词补全
+    local self_made
+    base, self_made = inject_self_made(cx, base, dict_words)
+    -- inject: 本级 pin 排序 + 最近造词 / 次简 / ;; 标点
+    local chosen = apply_manual_order(flow, base, cx.key, cx.span_start,
+                                      cx.span_end, cx.code_text)
+    local recent
+    chosen, recent = inject_recent(cx, chosen)
+    local secondary_text
+    chosen, secondary_text = inject_secondary(cx, chosen)
+    local punct_only
+    chosen, punct_only = inject_punct(cx, chosen)
+    -- 形码显示：有候选时接在候选 preedit 上（annotate）；候选全空时
+    -- preedit 会退回原始输入，改挂在段的 prompt 上（插在 preedit 结尾）
+    local seg = ectx.composition and ectx.composition:back()
+    if seg then
+        seg.prompt = (#chosen == 0 and cx.shape ~= "") and (" " .. cx.shape) or ""
+    end
+    if #chosen == 0 then
+        return
+    end
+
+    if flow_env.is_shape_input(flow, cx.input) then
+        emit_plain(cx, chosen, secondary_text)
+        return
+    end
+
+    local final, current_top, wanted, excluded =
+        apply_exclusions(cx, chosen)
+    emit_sorted(cx, final, base, excluded, current_top, wanted, self_made,
+                recent, secondary_text, punct_only)
 end
 
 local function tags_match(segment, env)
