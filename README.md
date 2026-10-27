@@ -38,6 +38,10 @@ git clone --recurse-submodules https://github.com/xkjd27/rime_jd27_flow
 | `<词库>.shape.txt` | 笔形筛选与提示 |
 | `<词库>.secondary.yaml` | 次简默认值 |
 
+sb / sbb 码形下（一声母键 + 笔形键，且声笔表里有这个码或它的补全）`promote` /
+`demote` 不做正常模式的调频：声笔候选不写进普通码的排序库；`demote` 仍先用于
+还原用户覆盖。
+
 翻页键是方案 `key_binder` 的绑定（`[ ]` → Page_Up / Page_Down），引擎不管翻页；
 引擎只做「顶标点」：它不吃的可打印键（标点）在交给后面的处理器之前，组合里有候选
 就先顶掉当前内容再让按键继续 —— 所以新组合第 1 页按 `[` 会顶屏并顺带给出「候选，

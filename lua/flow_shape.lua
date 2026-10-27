@@ -5,7 +5,7 @@
 --                    匹配；否则存进 flow_shape 属性，由 flow_filter 筛候选
 --   * ` 造词模式、`` 声笔调整模式（见 flow_create / flow_shengbi）
 --   * Tab 次简、动作键（promote / demote 一个键多种场合；键位在 schema 的
---     flow_engine/bindings 里配）
+--     flow_engine/bindings 里配；sb / sbb 码形下不调频，见 flow_shengbi）
 --   * BackSpace 删形码 / 造词模式下按字删
 --   * 顶功与四码自动上屏
 --   * 顶标点：引擎不吃的可打印键（标点）在交给后面的处理器之前，组合里有
@@ -412,6 +412,12 @@ local function processor(key_event, env)
         end
         -- 正常模式的 `=`：当前码是声笔简码且有用户覆盖时，先删覆盖、回默认表
         if act == "demote" and shengbi.revert(flow, ctx) then
+            return 1
+        end
+        -- sb / sbb 码形不做调频：候选来自声笔表（或它的补全），pin 进
+        -- 普通码的排序库会让声笔码和普通码的排序互相污染。`=` 的还原
+        -- 已在上面处理，这里只吞掉按键。
+        if shengbi.code_form(flow, ctx) then
             return 1
         end
         if ctx:has_menu() and ctx:get_selected_candidate() then

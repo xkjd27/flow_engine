@@ -8,7 +8,8 @@
 --
 -- 用户覆盖：`` ` ` 声笔调整模式里按 - / = 把当前词组设成 sb / sbb，存在
 -- flow_order 的 sbb/<码>（一个码一条 key，不动别的）；正常输入该码按 =
--- 删掉覆盖、回默认表。见 README「声笔简码」。
+-- 删掉覆盖、回默认表。正常模式下 sb / sbb 码形不参与 - / = 调频（见
+-- M.code_form）。见 README「声笔简码」。
 --
 -- 每个方案（schema_id）各自一份状态：见 flow_env.lua。
 
@@ -80,6 +81,32 @@ function M.get(ctx, code)
         return { { text = override, w = 0 } }
     end
     return state(ctx).codes[code]
+end
+
+-- 当前输入是不是声笔码形：一声母键 + 笔形键，且声笔表里有这个码或它的
+-- 补全（和 flow_filter 的 apply_shengbi 同一判断）。flow_shape 用它挡住
+-- 正常模式的 - / = 调频 —— 声笔候选不是普通码的候选，pin 进普通码的
+-- 排序库会让两边互相污染。
+function M.code_form(flow, ctx)
+    local input = ctx.input or ""
+    local shape = ctx:get_property("flow_shape") or ""
+    if #input ~= 1 or shape == "" then
+        return false
+    end
+    local sound = flow_env.sound_keys(flow) or ""
+    if not sound:find(input, 1, true) then
+        return false
+    end
+    local code = input .. shape
+    if M.get(flow, code) then
+        return true
+    end
+    for key in (flow_env.shape_keys(flow) or ""):gmatch(".") do
+        if M.get(flow, code .. key) then
+            return true
+        end
+    end
+    return false
 end
 
 -- 正常模式按 =：当前码（一声母键 + 笔形键）有用户覆盖时删掉、回默认表。
