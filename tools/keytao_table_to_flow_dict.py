@@ -37,8 +37,9 @@
   原表顺序的降序值``——先按原码码长分层（原版「简码在前」），只有同一个
   生成码里的重码才按「表序 + 行序」排；层间距 1.0、重码差值 < 0.5，不跨层。
   实测：1~2 键样本 top1 还原 100%，分层样本 99.7%。
-* ice / simp 变体用词库自己的词频，词组按字数降权（``LENGTH_WEIGHT``，
-  与 ``build_flow_dict.py`` 的默认一致）。
+* ice / simp 变体用词库自己的词频；词组按**字数硬分带**（字数少的带恒高于
+  字数多的带：4 字绝不比 2 字高、5 字绝不比 4 字高，带内才按词频排）。
+  实现与 ``build_flow_dict.py`` 共用 ``flow_dict_lib.assign_positions``。
 
 用法::
 
@@ -62,7 +63,6 @@ import flow_dict_lib as lib
 KT_REPO_URL = 'https://github.com/xkinput/KeyTao.git'
 KT_TABLES = ('keytao.single', 'keytao.phrase', 'keytao.supplement')
 MAX_CODE = 6                    # 单字最长原码（音码 2 + 形码 4）
-LENGTH_WEIGHT = 0.35            # 词组按字数降权底数（与 build_flow_dict 默认一致）
 
 LAYOUT = None                   # 方案 layout.py（--layout 载入）
 SHAPE_KEYS = ''                 # 形码键集合（由 LAYOUT 填）
@@ -264,17 +264,22 @@ def auto_read(text, char_codes):
 
 
 def encode_words(loaded, char_codes):
-    """(words, vocab) -> {(词, 码): 权重}（飞键全组合，同码取大）。"""
+    """(words, vocab) -> {(词, 码): 排序键}（飞键全组合，同码取最优）。
+
+    排序键来自 ``flow_dict_lib.extras_key``：先按字数分带（字少的在前），
+    带内按词库词频降序 —— 所以「4 字绝不比 2 字高」是构造出来的，
+    不是乘一个降权系数。写入时由 ``assign_positions`` 换算成码内位次权重。
+    """
     out = {}
 
     def add(text, reading, weight):
         if not reading:
             return
-        for code, scale in LAYOUT.word_codes(reading, 1.0, LENGTH_WEIGHT):
-            key = (text, code)
-            w = weight * scale
-            if w > out.get(key, 0.0):
-                out[key] = w
+        key = lib.extras_key(text, weight)
+        for code, _scale in LAYOUT.word_codes(reading, 1.0, 1.0):
+            old = out.get((text, code))
+            if old is None or key < old:
+                out[(text, code)] = key
 
     words, vocab = loaded
     for text, syllables, weight in words:
@@ -323,7 +328,15 @@ def variant_header(name, variant, note):
                         name, name))
 
 
-def write_variant(out_dir, name, variant, note, rows):
+def write_variant(out_dir, name, variant, note, rows, by_key=False):
+    """写出一个变体词库。
+
+    ``by_key``：rows 是排序键（``extras_key``）而不是权重 —— 按「码内位次」
+    换算成权重再写（同一个码里第 1 名 1.0、第 2 名 0.9999…，见
+    ``flow_dict_lib.assign_positions``）。ice / simp 变体用这条路。
+    """
+    if by_key:
+        rows = lib.assign_positions(rows)
     path = os.path.join(out_dir, '%s.%s.dict.yaml' % (name, variant))
     ordered = [(t, c, w) for (t, c), w in
                sorted(rows.items(), key=lambda kv: (kv[0][1], -kv[1], kv[0][0]))]
@@ -408,7 +421,7 @@ def main():
                 loaded[1].extend(vocab)
         rows = encode_words(loaded, char_codes)
         path, n = write_variant(args.out_dir, name, 'ice',
-                                'rime-ice 雾凇拼音', rows)
+                                'rime-ice 雾凇拼音', rows, by_key=True)
         print('词库 ice：%d 条 -> %s' % (n, path))
     else:
         print('未找到 rime-ice（%s），跳过 ice 变体' % ice_dir)
@@ -418,7 +431,7 @@ def main():
         print('  %s' % simp_path)
         rows = encode_words(load_words(simp_path), char_codes)
         path, n = write_variant(args.out_dir, name, 'simp',
-                                '袖珍简化字 pinyin_simp', rows)
+                                '袖珍简化字 pinyin_simp', rows, by_key=True)
         print('词库 simp：%d 条 -> %s' % (n, path))
     else:
         print('未找到 pinyin_simp.dict.yaml，跳过 simp 变体（用 --pinyin-simp 指定）')

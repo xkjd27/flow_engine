@@ -14,6 +14,9 @@ git clone --recurse-submodules https://github.com/xkjd27/rime_jd27_flow
 不用 git 的话，把本仓库 `lua/*.lua` 拷到 `<user>/lua/`：`flow_env.lua`、`flow_codes.lua`、`flow_shengbi.lua`、`flow_filter.lua`、`flow_shape.lua`、`flow_order.lua`、`flow_create.lua`、`flow_shapes.lua`、`flow_secondary.lua`、`flow_sync.lua`。
 
 生成码表（在方案仓库根目录）：`python3 engine/tools/build_flow_dict.py --layout layout.py`。
+词组权重以方案仓库的 `data/CiDB`（原版 CiDB，取自上游键道27C / 27）为准：原版词的
+码长与码序直接照搬，词库（冰 / 袖珍）多出来的词按字数硬分带排在后面（细节见脚本
+文件头「词组权重」）。
 
 ## 配置与数据文件
 

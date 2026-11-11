@@ -9,6 +9,9 @@
 * 方案数据（``SOURCE``）：``Lambda/ZiDB`` 单字表，提供键道 rank、笔画与读音
   （读音后面那个数是短码长度）—— 单字码、形码、原版首选全部由它推；
   以及上游 ``Lambda/Static/补充.txt`` 的纯形码段（部件不在 ZiDB 里）；
+* 原版词组权重（``CIDB``，默认 ``<SOURCE>/Lambda/CiDB``）：上游键道27C / 27 的
+  ``通常.txt``，每行 = 词 + 若干组（拼音 / 码长 / 码序权值）—— **默认的打字权重
+  就靠它和原版对齐**；
 * 标准拼音词库：``词\t拼音\t权重``，构建时把拼音转成键道音码。
   默认 ``pinyin_simp.dict.yaml``（Rime 自带）；
   可用 ``--rime-ice DIR`` 引入 rime-ice 的 ``base`` / ``ext`` / ``others``；
@@ -19,8 +22,8 @@
 --------
 输出前缀、标题、数据目录、输出目录、纯形码段名来自
 ``--layout`` 指定的方案 ``layout.py``（``NAME`` / ``TITLE`` / ``SOURCE`` /
-``OUT`` / ``SHAPE_SECTION``；相对路径按该文件所在目录解析）；
-``source`` / ``out`` 可用命令行覆盖。
+``OUT`` / ``SHAPE_SECTION`` / 可选的 ``CIDB``；相对路径按该文件所在目录解析）；
+``--source`` / ``--cidb`` / ``--out`` 可用命令行覆盖。
 
 生成规则
 --------
@@ -35,7 +38,19 @@
 这样 prism 的音节表只有几百项，整词由音节序列组成；
 不要写成无空格的长串，否则每个词都是独立音节，大数据量时 prism 会爆炸。
 
-不再读取键道 CiDB：形码只做运行时筛选，词库使用标准拼音词库即可。
+词组权重（同一个码里的先后）
+--------------------------
+1. **CiDB 优先**：词的（码长, 码序权值）直接搬原版——码短的在前面（原版
+   「简码在前」），同码长内按码序权值小的在前。两组并列（码长、权值都
+   一样）时用词库词频解（ice / pinyin_simp），这就是「相同权重无法解析
+   则参考 ice」；
+2. **词库自己的词（ice / pinyin_simp 多出来的）排在 CiDB 之后**：任何一条
+   CiDB 词的权重都高于任何一条额外词——所以默认首选、默认顺序全是原版的，
+   额外数据只是“多打得到”；
+3. 额外词按**字数硬性分带**：字数少的带恒高于字数多的带（4 字绝不比 2 字
+   高、5 字绝不比 4 字高），带内才按词库词频排。实现见
+   ``flow_dict_lib.assign_positions``：每个码里按排序键定次序，再用几何
+   级数给权重（librime 存的是 log(weight) 的 float32，只有相对差活下来）。
 
 Use ``--help`` for options.
 """
@@ -383,6 +398,83 @@ def load_zidb_static(path):
 
 
 # ---------------------------------------------------------------------------
+# 原版 CiDB：词组权重（码长 + 码序权值）
+# ---------------------------------------------------------------------------
+
+# CiDB 行格式（上游 Lambda/CiDB/通常.txt，字段以 tab 分隔）：
+#   word \t py1/py2/... \t 码长 \t 码序权值 [\t 另一组拼音 \t 码长 \t 码序权值 ...]
+# 码长 = 原版给这个词留的最短码长度（含形码，3~6 键），码序权值 = 同码分页
+# 次序（0 最前，最大 100）。上游 ci2codes 的语义：同一个生成码上取 min(码长) /
+# max(码序权值)。
+#
+# 这里只取排序：码长小的在前（原版「简码在前」），同码长内码序权值小的在前，
+# 两者都一样时用词库词频解（“相同权重无法解析则参考 ice”）。
+
+def load_cidb(path):
+    """读 CiDB 通常.txt：(词, [(拼音元组, 码长, 码序权值), ...])。"""
+    rows = []
+    with open(path, encoding='utf-8') as f:
+        for line in f:
+            fields = line.rstrip('\n').split('\t')
+            if len(fields) < 4 or not fields[0]:
+                continue
+            word = fields[0]
+            if len(word) < 2:
+                continue
+            entries = []
+            for i in range(1, len(fields) - 2, 3):
+                pinyin = tuple(fields[i].split('/'))
+                if not pinyin or not all(pinyin):
+                    continue
+                try:
+                    entries.append((pinyin, int(fields[i + 1]),
+                                    int(fields[i + 2])))
+                except ValueError:
+                    continue
+            if entries:
+                rows.append((word, entries))
+    return rows
+
+
+def build_cidb_codes(cidb, stats):
+    """CiDB -> ``{(词, 码): (码长, 码序权值)}``（与上游 ci2codes 同语义）。"""
+    out = {}
+    for word, entries in cidb:
+        for pinyin, code_len, rank in entries:
+            # 上游 sound_chars：5 字以上取前三 + 末字，所以音节数 = min(字数, 4)；
+            # 对不上的就是带标点/数字等「非音字」的了，流里的形码也筛不了它们
+            if len(pinyin) != min(len(word), 4):
+                stats['chars'] += 1
+                continue
+            reading = syllables_reading(pinyin)
+            if not reading:
+                stats['pinyin'] += 1
+                continue
+            codes = word_codes(reading)
+            if not codes:
+                stats['pinyin'] += 1
+                continue
+            for code, _scale in codes:
+                old = out.get((word, code))
+                if old is None:
+                    out[(word, code)] = (code_len, rank)
+                else:
+                    out[(word, code)] = (min(old[0], code_len),
+                                         max(old[1], rank))
+    return out
+
+
+def cidb_sort_keys(codes, freq):
+    """``{(词, 码): (码长, rank)}`` -> 排序键（元组越小越前）。
+
+    第一级 0 = CiDB 词（所有额外词都是 1，所以永远排在后面）；
+    第二级码长（小的在前）；第三级码序权值；第四级 -词库词频（解并列）。
+    """
+    return {(word, code): (0, code_len, rank, -freq.get(word, 0.0), word)
+            for (word, code), (code_len, rank) in codes.items()}
+
+
+# ---------------------------------------------------------------------------
 # 音码生成
 # ---------------------------------------------------------------------------
 
@@ -454,14 +546,13 @@ def build_char_codes(zidb, zidb_static, char_w, char_reading_w, default_weight,
     return result
 
 
-def word_code(reading, abbrev_weight, length_weight=1.0):
-    """reading = [(全码, 声母码)...] -> (码, 权重系数) 或 None（见 flow_dict_lib）。"""
-    return lib.word_code(reading, abbrev_weight, length_weight)
+def word_codes(reading):
+    """reading = 每个字一个变体列表 -> [(码, 系数)]（飞键全组合）。
 
-
-def word_codes(reading, abbrev_weight, length_weight=1.0):
-    """reading = 每个字一个变体列表 -> [(码, 系数)]（飞键全组合）。"""
-    return LAYOUT.word_codes(reading, abbrev_weight, length_weight)
+    权重系数现在不用了（词组之间只比「同一个码里的次序」，由
+    ``flow_dict_lib.assign_positions`` 统一换算），传 1.0 把它关掉。
+    """
+    return LAYOUT.word_codes(reading, 1.0, 1.0)
 
 
 def syllables_reading(syllables):
@@ -524,39 +615,66 @@ def align_original_first(danzi, first):
     return changed, missing
 
 
-def build_cizu(word_entries, vocab_entries, char_codes,
-               abbrev_weight, default_weight, length_weight=1.0):
-    entries = {}
+def build_cizu(cidb_codes, word_entries, vocab_entries, char_codes,
+               default_weight):
+    """词组表：CiDB 权重优先，词库自己的词按字数硬分带加在后面。
+
+    返回 ``(entries, stats)``，entries = ``{(词, 码): 权重}``（权重只表示
+    同一个码里的位次，见 flow_dict_lib.assign_positions）。
+    """
     skipped = {'pinyin': 0, 'vocab': 0}
+    freq = {}          # 词频：解 CiDB 并列 + 带内排序
+    extra_keys = {}    # (词, 码) -> 排序键
 
-    def add(word, code, weight):
-        if not code:
-            return
-        key = (word, code)
-        if weight > entries.get(key, 0.0):
-            entries[key] = weight
-
-    def add_reading(word, reading, weight):
-        for code, scale in word_codes(reading, abbrev_weight, length_weight):
-            add(word, code, weight * scale)
+    def add(word, reading, weight):
+        if not reading:
+            return False
+        codes = word_codes(reading)
+        if not codes:
+            return False
+        key = lib.extras_key(word, weight)
+        for code, _scale in codes:
+            old = extra_keys.get((word, code))
+            if old is None or key < old:
+                extra_keys[(word, code)] = key
+        return True
 
     for word, syllables, weight in word_entries:
         weight = weight or default_weight
-        reading = syllables_reading(syllables)
-        if not reading:
+        freq[word] = max(freq.get(word, 0.0), weight)
+        if not add(word, syllables_reading(syllables), weight):
             skipped['pinyin'] += 1
-            continue
-        add_reading(word, reading, weight)
 
     for word, weight in vocab_entries:
         weight = weight or default_weight
-        reading = auto_reading(word, char_codes)
-        if not reading:
+        freq[word] = max(freq.get(word, 0.0), weight)
+        if not add(word, auto_reading(word, char_codes), weight):
             skipped['vocab'] += 1
-            continue
-        add_reading(word, reading, weight)
 
-    return entries, skipped
+    # CiDB 词；同一个 (词, 码) 两边都有时 CiDB 优先（键更小）
+    keys = cidb_sort_keys(cidb_codes, freq)
+    for key, value in extra_keys.items():
+        if key not in keys or value < keys[key]:
+            keys[key] = value
+
+    return lib.assign_positions(keys), skipped
+
+
+def check_cizu(entries, cidb_codes):
+    """构造完自检：同一个码里不能有额外词排到 CiDB 词前面。返回违规示例。"""
+    worst = {}
+    for (word, code), weight in entries.items():
+        if (word, code) in cidb_codes:
+            continue
+        if weight > worst.get(code, 0.0):
+            worst[code] = weight
+    bad = []
+    for (word, code), weight in entries.items():
+        if (word, code) not in cidb_codes:
+            continue
+        if weight < worst.get(code, 0.0):
+            bad.append((code, word, weight, worst[code]))
+    return bad
 
 
 # ---------------------------------------------------------------------------
@@ -592,9 +710,11 @@ def variant_header(name, title, variant, note):
         '# %s 词库（%s）\n'
         '# 由 tools/build_flow_dict.py 自动生成，请勿手工修改\n'
         '# 2 字：音音全码；3/4 字：首字母；5 字以上：前三首 + 末一首\n'
+        '# 权重只表示“同一个码里的先后”：原版 CiDB 的词按（码长, 码序）排在前，\n'
+        '# 词库自己的词按字数分带排在后面（字少的带在前）。\n'
         '---\n'
         'name: %s.%s\n'
-        'version: "1.2"\n'
+        'version: "1.3"\n'
         'sort: by_weight\n'
         'use_preset_vocabulary: false\n'
         'import_tables:\n'
@@ -652,6 +772,10 @@ def main():
                         help='方案 layout.py（布局表与构建元信息），相对路径按其所在目录解析')
     parser.add_argument('--source', default=None,
                         help='数据快照路径（默认取 layout.py 的 SOURCE）')
+    parser.add_argument('--cidb', default=None, metavar='DIR',
+                        help='原版 CiDB 目录（默认取 layout.py 的 CIDB，没有则 <SOURCE>/Lambda/CiDB）')
+    parser.add_argument('--no-cidb', action='store_true',
+                        help='不用原版权重（只用词库词频；调试试对比用）')
     parser.add_argument('--pinyin-simp', default=None,
                         help='pinyin_simp.dict.yaml 路径')
     parser.add_argument('--no-pinyin-simp-words', action='store_true',
@@ -669,15 +793,13 @@ def main():
                         help='输出目录（默认取 layout.py 的 OUT）')
     parser.add_argument('--weight-scale', type=float, default=1.0,
                         help='全局词频缩放（默认 %(default)s）')
-    parser.add_argument('--abbrev-weight', type=float, default=1.0,
-                        help='简码（3 字以上首字母）词频系数（默认 %(default)s）')
-    parser.add_argument('--length-weight', type=float, default=0.35,
-                        help='词组按字数降权底数：每多 1 字乘一次（默认 %(default)s，1 = 不降权）')
     parser.add_argument('--default-weight', type=float, default=1.0,
                         help='无权重条目的默认词频（默认 %(default)s）')
     args = parser.parse_args()
     meta = load_layout(args.layout)
     source = args.source or meta['source']
+    cidb_dir = args.cidb or meta.get('cidb') or os.path.join(
+        source, 'Lambda', 'CiDB')
     out = args.out or meta['out']
     name = meta['name']
     title = meta['title']
@@ -767,8 +889,23 @@ def main():
 
     os.makedirs(out, exist_ok=True)
     scale = args.weight_scale
-    print('词频缩放系数 %.6g；节奏码 ×%.6g；按字数降权 ×%.6g/字'
-          % (scale, args.abbrev_weight, args.length_weight))
+    print('词频缩放系数 %.6g（只影响写出的数值，不影响顺序）' % scale)
+
+    # ---------------- 原版 CiDB 权重 ----------------
+    cidb_codes = {}
+    if args.no_cidb:
+        print('原版权重：已关闭（--no-cidb），只用词库词频')
+    else:
+        cidb_path = os.path.join(cidb_dir, '通常.txt')
+        if not os.path.exists(cidb_path):
+            sys.exit('找不到原版 CiDB：%s\n（用 --cidb DIR 指定，或加 --no-cidb）'
+                     % cidb_path)
+        cidb = load_cidb(cidb_path)
+        stats = {'chars': 0, 'pinyin': 0}
+        cidb_codes = build_cidb_codes(cidb, stats)
+        print('原版权重（CiDB）：%s\n  词 %d，词-码对 %d（非音字跳过 %d，无法注音 %d）'
+              % (cidb_path, len(cidb), len(cidb_codes),
+                 stats['chars'], stats['pinyin']))
 
     n1 = write_dict(os.path.join(out, '%s.danzi.dict.yaml' % name),
                     danzi_header(name, title), danzi, scale)
@@ -797,14 +934,17 @@ def main():
     if ice_ready:
         variants.append(('ice', 'rime-ice', ice_words, ice_vocab))
     for variant, note, words, vocab in variants:
-        cizu, skipped = build_cizu(words, vocab, char_codes,
-                                   args.abbrev_weight, args.default_weight,
-                                   args.length_weight)
+        cizu, skipped = build_cizu(cidb_codes, words, vocab, char_codes,
+                                   args.default_weight)
         path = os.path.join(out, '%s.%s.dict.yaml' % (name, variant))
         n = write_dict(path, variant_header(name, title, variant, note),
                        cizu, scale)
         print('词库 %s：%d 条（无法注音：拼音词 %d，自动注音 %d）'
               % (variant, n, skipped['pinyin'], skipped['vocab']))
+        bad = check_cizu(cizu, cidb_codes)
+        if bad:
+            print('  ! %d 个码上额外词排到了原版词前面（例：%s）'
+                  % (len(bad), bad[0]))
 
     print('单字 %d 条，纯形码 %d 条，期望形码 %d 字' % (n1, len(shape_dict), len(shapes)))
 

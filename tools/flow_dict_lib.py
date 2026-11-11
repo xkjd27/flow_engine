@@ -40,6 +40,8 @@ LAYOUT_TABLES = ('PY_TRANSFORM', 'PY_SHENG', 'PY_YUN',
                  'JD_S2K', 'JD_Y2K', 'JD_B')
 LAYOUT_OPTIONAL = ('JD_S2K_YUN',)
 LAYOUT_META = ('NAME', 'TITLE', 'SHAPE_SECTION', 'SOURCE', 'OUT')
+# 可选元信息：``CIDB``（原版 CiDB 目录，27/27C 用；不写就找 <SOURCE>/Lambda/CiDB）
+LAYOUT_OPTIONAL_META = ('CIDB',)
 
 
 class Layout:
@@ -217,7 +219,15 @@ def load_layout(path):
         if not isinstance(value, str) or not value.strip():
             sys.exit('布局表 %s 的 %s 应为非空字符串' % (path, key))
         value = value.strip()
-        if key in ('SOURCE', 'OUT') and not os.path.isabs(value):
+        if key in ('SOURCE', 'OUT', 'CIDB') and not os.path.isabs(value):
+            value = os.path.normpath(os.path.join(base, value))
+        meta[key.lower()] = value
+    for key in LAYOUT_OPTIONAL_META:
+        value = getattr(module, key, None)
+        if not value:
+            continue
+        value = value.strip()
+        if not os.path.isabs(value):
             value = os.path.normpath(os.path.join(base, value))
         meta[key.lower()] = value
     return Layout(tables, meta=meta, name=meta.get('name', ''))
@@ -265,6 +275,50 @@ def syllables_reading(layout, syllables, fly=True):
             return None
         reading.append(variants)
     return reading
+
+
+# ---------------------------------------------------------------------------
+# 词库排序：排序键 -> 码内位次权重
+# ---------------------------------------------------------------------------
+#
+# 候选顺序只看**同一个码内部**（不同码的候选永不同时出现在一个菜单里）。
+# 所以不用编一个全局数值尺度，而是：先给每条词算一个排序键（元组，越小
+# 越前），再在同一个码里按键排序、按位置给权重。
+#
+# 为什么不用「词频当权重」：librime 编表时存的是 ``log(weight)`` 的 **float32**
+# （``dict/dict_compiler.cc``: ``e->weight = log(r->weight)``，``Weight = float``），
+# 只有**相对**差活着。码长/字数分层需要在同一个码里拉出 10⁶ 量级差，那个
+# 时候相邻词频的差就落到 float 分辨率下面去了（1e-9 级别直接被揞成一样），
+# 排序就乱了。几何级数的 log 步长是常数，与总跨度无关。
+POS_STEP = 0.9999        # 码内每下移一名乘一次（log 步长 1e-4 ≫ float 1e-7）
+
+def extras_key(text, weight):
+    """词库自己的条目（原版 CiDB 之外的）在同一个码里的排序键。
+
+    第一级 = 字数：字少的带恒高于字多的带 —— 所以「4 字绝不比 2 字高、
+    5 字绝不比 4 字高」是排序键构造出来的，不是靠乘一个降权系数。
+    （只有同为 4 键码的 2/4/5+ 字才真的撞码；3 字是 3 键码，只和自己撞。）
+    第二级 = 词频（高在前）。
+    """
+    return (1, max(len(text), 2), 0, -weight, text)
+
+def assign_positions(keys):
+    """``{(词, 码): 排序键}`` -> ``{(词, 码): 权重}``。
+
+    同一个码里按键升序排好，第 1 名 1.0、第 2 名 0.9999、…… 跨码复用同一
+    把尺子（不同码不比较）。返回的权重只表示「在该码里的位次」。
+    """
+    per_code = {}
+    for (text, code), key in keys.items():
+        per_code.setdefault(code, []).append((key, text))
+    out = {}
+    for code, items in per_code.items():
+        items.sort()
+        step = 1.0
+        for _key, text in items:
+            out[(text, code)] = step
+            step *= POS_STEP
+    return out
 
 
 def parse_weight(text):
