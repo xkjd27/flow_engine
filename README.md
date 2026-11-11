@@ -71,7 +71,7 @@ sb / sbb 码形下（一声母键 + 笔形键，且声笔表里有这个码或�
   `<sync_dir>/<installation_id>/`；load 时引擎扫 `<sync_dir>/*/` 下的同名
   文件合并。每台机器只写自己的文件，**远端文件只读**（不会和云盘/别的
   机器抢写）；
-- 不走 Rime 的 userdb 通道：userdb 快照的 key 必须是「码<TAB>词」、value
+- 不走 Rime 的 userdb 通道：userdb 快照的 key 必须是「码`<TAB>`词」、value
   会被重写成权重，合并又没有删除语义，历史记录会永久留在快照并集里；
   想清理就得改别人的快照文件（会撞云同步）。自有文件没有这些约束；
 - 每个身份（pin 看词、sbb/次简看码）取时间最新的记录；删除用墓碑
@@ -85,9 +85,14 @@ sb / sbb 码形下（一声母键 + 笔形键，且声笔表里有这个码或�
 
 ## 测试
 
-- `lua tools/smoke.lua <A数据目录> <A词库> <A_schema_id> <A声母键> <A笔形键>
-  <B数据目录> <B词库> <B_schema_id> <B声母键> <B笔形键>`：纯 Lua 冒烟测试
-  （不需要 librime），验证两个方案共用一个 Lua state 时数据/缓存互不串。
+- `lua tools/smoke.lua`（纯 Lua 冒烟测试，不需要 librime）：验证两个方案
+  共用一个 Lua state 时数据/缓存互不串。
+
+  ```sh
+  lua tools/smoke.lua <A数据目录> <A词库> <A_schema_id> <A声母键> <A笔形键> \
+                      <B数据目录> <B词库> <B_schema_id> <B声母键> <B笔形键>
+  ```
+
 - `luajit tools/test_sync.lua`（或 `lua`）：同步逻辑单元 + 多机模拟测试，
   用假 LevelDb 跑真实引擎，同步走真实文件（模拟 `backup_config_files` 把
   本地 `.sync.txt` 拷进 sync 目录），68 项检查，不需要 librime。
