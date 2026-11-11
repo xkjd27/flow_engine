@@ -87,6 +87,10 @@ end
 -- 被顶掉的候选沿它自己的形码串顺延到下一级，递归直到有空位；
 -- 已到完整形码仍无空位则丢弃该 pin（回归自然排序）。
 -- 递归深度由候选自己的期望形码长度兜底（每层形码 +1，不会死循环）。
+-- 顺延**只动形码**，音码永远是 input —— 所以被挤走的候选不会掉到非法长度。
+-- 例外的来源只有一个：库里本来就有越界记录（旧版声笔调频把词 pin 到 1~2 键
+-- 音码上）。那类记录不能再被顺延出一个新的越界 key，直接丢掉（load 时
+-- flow_order 也会清掉它们，这里是为了不再写出新的脏 key）。
 -- syl 非空时表示这是一次音码削减，完整音节会随 pin 保存。
 local function place(flow, text, input, shape, syl)
     local function put(t, s, sy)
@@ -105,7 +109,13 @@ local function place(flow, text, input, shape, syl)
         if occupant then
             local exp = shapes.expected(flow, occupant)
             if exp and #s < #exp and exp:sub(1, #s) == s then
-                put(occupant, exp:sub(1, #s + 1), occ_syl)
+                if codes.sound_ok(flow, occupant, input) then
+                    put(occupant, exp:sub(1, #s + 1), occ_syl)
+                elseif log and log.warning then
+                    log.warning("flow_shape: 「" .. occupant .. "」本来就不在码 "
+                                .. input .. " 下（旧版声笔调频的残留），"
+                                .. "不再顺延，直接丢掉")
+                end
             end
         end
     end
@@ -591,4 +601,6 @@ local function fini(env)
     flow_env.release(env)
 end
 
-return { func = processor, init = init, fini = fini }
+-- _place：只给测试用（tools/test_pins.lua 验「挤走」不会写出越界 key）。
+-- librime-lua 只认 func / init / fini / tags_match，多挂一个不影响。
+return { func = processor, init = init, fini = fini, _place = place }

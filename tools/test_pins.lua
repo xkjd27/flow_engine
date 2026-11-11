@@ -126,11 +126,24 @@ version: "1"
 我	wo	100
 我	w	60
 们	mk	100
+你	ni	100
 好	hz	100
 和	h	100
 和	hf	90
 还	hc	100
 没	mo	100
+]]
+
+-- 形码表（<词库>.shape.txt，值是笔形键串）
+local SHAPES = [[
+# char<TAB>shape
+我	aae
+们	eoi
+你	ae
+好	aeai
+和	eo
+还	vio
+没	ivov
 ]]
 
 local function write_file(path, text)
@@ -152,7 +165,10 @@ end
 local function fresh_dir()
     os.execute("rm -rf " .. ROOT)
     os.execute("mkdir -p " .. ROOT)
+    _G.__stores = {}          -- 假 LevelDb 的仓库也要清（不然上一节的 pin 留到下一节）
+    _G.__open_dbs = {}
     write_file(ROOT .. "/" .. DICT .. ".danzi.dict.yaml", DANZI)
+    write_file(ROOT .. "/" .. DICT .. ".shape.txt", SHAPES)
 end
 
 -- ---------- 引擎装载 ----------
@@ -160,6 +176,8 @@ local flow_env = require("flow_env")
 local codes = require("flow_codes")
 local order = require("flow_order")
 local flow_sync = require("flow_sync")
+local flow_shapes = require("flow_shapes")
+local shape_filter = require("flow_shape")   -- 只用 _place（挤走逻辑）
 
 local n_flow = 0
 local function load(opts)
@@ -198,12 +216,13 @@ local function load(opts)
     }
     local flow = flow_env.attach(env)
     order.init(flow)
+    _G.__last_env = env
     return flow, env
 end
 
 local function unload(flow, env)
     order.close(flow)
-    flow_env.release(env)
+    flow_env.release(env or _G.__last_env)
 end
 
 local function order_path() return ROOT .. "/" .. DICT .. ".order.txt" end
@@ -273,6 +292,11 @@ unload(flow, {})
 -- ---------- 3. 同步：坏记录被墓碑压掉、不会复活 ----------
 print("== 3. 同步记录：被清掉的 pin 会写 unpin 墓碑，不会被复活 ==")
 fresh_dir()
+do
+    local k = kv()
+    k["ord/h|"] = "好 hz"                  -- 本地合法的单字一简
+    k["ord/womk|"] = "我们"                -- 本地合法的词 pin
+end
 local SEP = string.char(31)
 local function enc(s) return (tostring(s or ""):gsub("%%", "%%25")) end
 local function rec(kind, identity, key, index, syl, ts, seq)
@@ -332,6 +356,47 @@ local txt = read_file(order_path()) or ""
 ok(txt:find("wo|", 1, true) == nil, "txt：越界 pin 从文件里删掉了")
 ok(txt:find("womk|\t我们", 1, true) ~= nil, "txt：合法 pin 还在文件里")
 ok(txt:find("h|\t好 hz", 1, true) ~= nil, "txt：单字一简还在文件里")
+unload(flow, {})
+
+-- ---------- 5. 挤走（place）：只沿自己的形码串顺延，不换音码 ----------
+print("== 5. 调频挤走：被顶掉的候选只加形码，音码不变；越界记录不再被顺延 ==")
+fresh_dir()
+flow = load({ sync = false })
+ok(flow_shapes.init(flow), "shapes.init 失败")
+local place = shape_filter._place
+
+-- 5a 单字：和 先在 h|，再拿 好 挤走它
+place(flow, "和", "h", "", nil)
+eq(order.get(flow, "h|")[1], "和", "挤走前：和 在 h|")
+place(flow, "好", "h", "", nil)
+eq(order.get(flow, "h|")[1], "好", "挤走后：好 占 h|")
+local occ = order.get(flow, "h|e")
+ok(occ ~= nil and occ[1] == "和",
+   "被挤走的 和 落在 h|e（它自己的形码首键），不是别的音码")
+ok(codes.sound_ok(flow, "和", "h"), "被挤走的 和 音码仍然合法（h 是 hz 的前缀）")
+ok(order.get(flow, "h|a") == nil, "没有被写到别的形码级上")
+
+-- 5b 词组：我们 先在 womk|，再拿 你们 挤走它
+place(flow, "我们", "womk", "", nil)
+place(flow, "你们", "womk", "", nil)
+eq(order.get(flow, "womk|")[1], "你们", "挤走后：你们 占 womk|")
+local w1 = order.get(flow, "womk|a")
+ok(w1 ~= nil and w1[1] == "我们", "被挤走的 我们 落在 womk|a（形码首键 a）")
+ok(codes.sound_ok(flow, "我们", "womk"), "被挤走的 我们 音码仍然是 womk（未变）")
+
+-- 5c 库里本来就有越界记录：挤走时不能再顺延出一个新的越界 key
+order.insert(flow, "h|", "我们", 1)     -- 词挂在 1 键音码上（旧版声笔调频的残留）
+place(flow, "好", "h", "", nil)
+eq(order.get(flow, "h|")[1], "好", "越界记录被顶掉后 好 占 h|")
+eq(order.get(flow, "h|a"), nil,
+   "越界的 我们 不会被顺延到 h|a（直接丢掉，不再写出新的脏 key）")
+local survived = false
+for _, k in ipairs({ "h|", "h|a", "h|e", "h|ae", "h|aeo" }) do
+    for _, t in ipairs(order.get(flow, k) or {}) do
+        if t == "我们" then survived = true end
+    end
+end
+ok(not survived, "越界的 我们 没有在任何 h| 级别上留下新记录")
 unload(flow, {})
 
 os.execute("rm -rf " .. ROOT)

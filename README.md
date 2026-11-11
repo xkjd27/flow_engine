@@ -88,10 +88,11 @@ sb / sbb 码形下（一声母键 + 笔形键，且声笔表里有这个码或�
 - `luajit tools/test_sync.lua`（或 `lua`）：同步逻辑单元 + 多机模拟测试，
   用假 LevelDb 跑真实引擎，同步走真实文件（模拟 `backup_config_files` 把
   本地 `.sync.txt` 拷进 sync 目录），68 项检查，不需要 librime。
-- `lua tools/test_pins.lua`：调码边界 + 旧数据清理测试（49 项检查）：
+- `lua tools/test_pins.lua`：调码边界 + 旧数据清理 + 挤走测试（61 项检查）：
   `flow_codes.sound_ok` 的边界（单字可缩、词不行、纯笔码不判断）、`load` 时
   清掉越界 pin（leveldb / txt 两种后端）、清理写 `unpin` 墓碑而不会被同步
-  文件复活、合法 pin 不动、幂等。
+  文件复活、合法 pin 不动、幂等；调频挤走被顶掉的候选时只沿它自己的形码串
+  顺延（音码不变）、越界记录不会被顺延出新 key。
 - `tools/sync_e2e.sh`：真实 librime 端到端测试（两台机器 A/B 共享 sync_dir，
   真的调 `RimeSyncUserData`），覆盖文件传输、pin/次简同步、冲突、墓碑、
   坏行、幂等、有界、bootstrap，30 项检查；编译 probe 和准备测试目录见
