@@ -277,4 +277,44 @@ function M.is_scheme_code(ctx, text, code)
     return false
 end
 
+-- text 能不能挂在音码 input 下（调码的边界）：
+--   * 单字：input 得是它某个码的前缀 —— 一简（h）/ 声韵（hz）都算，这就是
+--     「排码」给单字缩码；
+--   * 多字词：input 必须**正好**是它的方案码。词的音码由字数决定（2 字 =
+--     音音全码、3/4 字 = 首字母、5+ = 前三首 + 末首），缩短了就不存在这样的
+--     词条，只能靠 pin 硬塞 —— 那正是「单键 / 双键突然冒出不该出现的词」的
+--     来源（旧版在声笔码形下按 - 会把声笔候选 pin 到 1 键音码上）；
+--   * 纯笔码（input 全是笔形键）：不是音码，不判断；
+--   * 没有码表数据（词库文件缺失 / 生僻到没有码）：不判断，别误伤。
+function M.sound_ok(ctx, text, input)
+    if not input or input == "" then
+        return false
+    end
+    if flow_env.is_shape_input(ctx, input) then
+        return true
+    end
+    if not text or text == "" then
+        return false
+    end
+    local list = build_codes(ctx, text)
+    if #list == 0 then
+        return true
+    end
+    local n = #input
+    if utf8.len(text) == 1 then
+        for _, e in ipairs(list) do
+            if #e.code >= n and e.code:sub(1, n) == input then
+                return true
+            end
+        end
+        return false
+    end
+    for _, e in ipairs(list) do
+        if e.code == input then
+            return true
+        end
+    end
+    return false
+end
+
 return M

@@ -35,6 +35,7 @@
 
 local flow_env = require("flow_env")
 local flow_sync = require("flow_sync")
+local flow_codes = require("flow_codes")
 
 local M = {}
 
@@ -359,6 +360,55 @@ local function apply_sync_record(flow, rec)
     end
 end
 
+-- ---------------- 旧数据清理 ----------------
+
+-- 旧版引擎（声笔码形还没挡住 - / = 调频时）会把声笔候选 pin 到 1 键音码上：
+-- `ha` 按 - → `ord/h| = 还没`，被顶掉的候选还会顺延到 `ord/h|v`。这些记录
+-- 会让「单键 / 双键突然冒出不该出现的词」，而且 leveldb 和同步文件都会把它
+-- 一直留着（重启、升级、换机器都还在）。
+--
+-- 判据就是 flow_codes.sound_ok：多字词的音码必须是它自己的方案码。单字不
+-- 动（一简 / 声韵是排码功能），纯笔码的 key 也不动。删的时候走 M.remove，
+-- 它会自己写 unpin 墓碑，否则别的机器 / 同步文件里的旧记录会把它复活。
+local function prune_bad_pins(flow, st)
+    if not flow_codes.init(flow) then
+        return 0          -- 没有码表数据（测试 / 缺文件）：不判断，别误删
+    end
+    local dead = {}
+    for key, list in pairs(st.order) do
+        if key:find("|", 1, true) and key:sub(1, 1) ~= "~" then
+            local bar = key:find("|", 1, true)
+            local sound = key:sub(1, bar - 1)
+            local all_bad = sound == ""   -- 空音码：谁都不该挂在这里
+            if all_bad or not flow_env.is_shape_input(flow, sound) then
+                for _, text in ipairs(list) do
+                    if all_bad or (utf8.len(text) > 1 and
+                                   not flow_codes.sound_ok(flow, text, sound)) then
+                        dead[#dead + 1] = { key = key, text = text }
+                    end
+                end
+            end
+        end
+    end
+    -- 批量改：同步文件只在最后重写一次（否则一次清理就是 N 次全量写）
+    local sy = st.sync
+    if sy then
+        sy.defer = true
+    end
+    for _, d in ipairs(dead) do
+        M.remove(flow, d.key, d.text)
+    end
+    if sy then
+        sy.defer = false
+        flow_sync.flush(st)
+    end
+    if #dead > 0 and log and log.warning then
+        log.warning("flow_order: 清掉 " .. tostring(#dead) .. " 条越界的调序记录"
+                    .. "（旧版声笔调频留下的，词不在那个音码下）")
+    end
+    return #dead
+end
+
 function M.init(flow)
     local st = state(flow)
     st.users = (st.users or 0) + 1
@@ -433,6 +483,8 @@ function M.init(flow)
             log.error("flow_order: 同步记录合并失败：" .. tostring(err))
         end
     end
+    -- 合并完再清一次旧版留下的越界 pin（见 prune_bad_pins）
+    prune_bad_pins(flow, st)
     st.ready = true
 end
 

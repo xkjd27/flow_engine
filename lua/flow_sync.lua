@@ -372,8 +372,18 @@ local function emit(st, kind, identity, args)
         return false
     end
     st.sync.winners[rec.group] = rec
-    save_file(st)
+    if not st.sync.defer then
+        save_file(st)
+    end
     return true
+end
+
+-- 批量修改时先把 st.sync.defer 打开（flow_order 清旧数据用），改完再 flush：
+-- 否则一次清理就是 N 次全量重写，云盘会跳着传。
+function M.flush(st)
+    if st.sync and not st.sync.defer then
+        save_file(st)
+    end
 end
 
 -- ---------------- 状态 ----------------

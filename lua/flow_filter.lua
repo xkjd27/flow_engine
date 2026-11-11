@@ -39,11 +39,16 @@ end
 -- 把手动顺序里的候选提到前面；传了 span 时，列表里有、当前翻译没给的
 -- （用户 pin 过的词，含造词入库的）直接补一个候选——所以只用 order.userdb
 -- 就能既排序又加词。
+-- key 里的音码是这道门的守卫：越界的 pin（旧版声笔调频把词 pin 到 1~2 键
+-- 音码上）不参与排序，也不补成候选，否则单键 / 双键就会冒出不该出现在那个
+-- 权重的词（load 时 flow_order 会清掉它们，这里是兼保险）。
 local function apply_manual_order(flow, list, key, span_start, span_end, code)
     local wanted = order.get(flow, key)
     if not wanted or #wanted == 0 then
         return list
     end
+    local bar = key:find("|", 1, true) or (#key + 1)
+    local sound = key:sub(1, bar - 1)
     -- 文本 -> 列表里第一个该文本的位置：pin 表一般只有几条，建一次索引
     -- （O(列表)）比每个 pin 词都从头扫一遍列表（O(pin × 列表)）划算，
     -- 而且 shape_hint 对每个候选都会调到这里。
@@ -57,27 +62,30 @@ local function apply_manual_order(flow, list, key, span_start, span_end, code)
     local used = {}
     local result = {}
     for _, text in ipairs(wanted) do
-        local found = index[text]
-        if found and used[found] then
-            -- 同一个词在列表里出现多次：接着往后找没被用过的那个
-            found = nil
-            for i = index[text] + 1, #list do
-                if not used[i] and list[i].text == text then
-                    found = i
-                    break
+        -- 越界的 pin（音码不是这个词自己的码）：不排序也不补候选
+        if codes.sound_ok(flow, text, sound) then
+            local found = index[text]
+            if found and used[found] then
+                -- 同一个词在列表里出现多次：接着往后找没被用过的那个
+                found = nil
+                for i = index[text] + 1, #list do
+                    if not used[i] and list[i].text == text then
+                        found = i
+                        break
+                    end
                 end
             end
-        end
-        if found then
-            result[#result + 1] = list[found]
-            used[found] = true
-        elseif span_start then
-            -- 翻译没给的 pin（造词存的组合词）补成候选；preedit 要带上当前
-            -- 音码——否则这一段 composition 的 preedit 只剩形码，提示框里
-            -- 看不到 hjm，simp 这种没有词库兜底的词库下尤其明显
-            local cand = Candidate("flow_order", span_start, span_end, text, "")
-            cand.preedit = code or ""
-            result[#result + 1] = cand
+            if found then
+                result[#result + 1] = list[found]
+                used[found] = true
+            elseif span_start then
+                -- 翻译没给的 pin（造词存的组合词）补成候选；preedit 要带上当前
+                -- 音码——否则这一段 composition 的 preedit 只剩形码，提示框里
+                -- 看不到 hjm，simp 这种没有词库兜底的词库下尤其明显
+                local cand = Candidate("flow_order", span_start, span_end, text, "")
+                cand.preedit = code or ""
+                result[#result + 1] = cand
+            end
         end
     end
     for i, cand in ipairs(list) do
@@ -95,11 +103,19 @@ local function collect_exclusions(flow, input, shape)
     local st = state(flow)
     local excluded = {}
     -- 更短一级的首选：该级有手动顺序（pin）就以 pin 的首位为准——
-    -- pin 是刚改过的（- / =），top_cache 里存的可能是改之前的旧首选
+    -- pin 是刚改过的（- / =），top_cache 里存的可能是改之前的旧首选。
+    -- 越界的 pin（音码不是这个词自己的码）跳过，不然它会把本级的一个
+    -- 正常候选当成「上一级的首选」排掉。
     local function top_at(key)
         local wanted = order.get(flow, key)
         if wanted and #wanted > 0 then
-            return wanted[1]
+            local bar = key:find("|", 1, true) or (#key + 1)
+            local sound = key:sub(1, bar - 1)
+            for _, text in ipairs(wanted) do
+                if codes.sound_ok(flow, text, sound) then
+                    return text
+                end
+            end
         end
         return st.top_cache[key]
     end
@@ -401,19 +417,23 @@ local function inject_self_made(cx, base, dict_words)
         for _, pin in ipairs(pins) do
             local reached = #shape >= #pin.shape
             for _, text in ipairs(pin.list) do
-                self_made[text] = true
-                if not dict_words[text] then
-                    -- 本级 pin 也要进 base：模拟更深一级时它仍在候选里，
-                    -- apply_manual_order 会把它排到当前级别首位，不会重复
-                    if not seen[text] and shapes.match(flow, text, shape) then
-                        seen[text] = true
-                        local cand = Candidate("flow_order", cx.span_start,
-                                               cx.span_end, text, "")
-                        cand.preedit = code_text
-                        if reached then
-                            injected_pre[#injected_pre + 1] = cand
-                        else
-                            injected_post[#injected_post + 1] = cand
+                -- 越界的 pin（旧版声笔调频把词塞到 1~2 键音码上）不要补进
+                -- 来的，否则单键 / 双键就会冒出不该出现在那个权重的词
+                if codes.sound_ok(flow, text, code_text) then
+                    self_made[text] = true
+                    if not dict_words[text] then
+                        -- 本级 pin 也要进 base：模拟更深一级时它仍在候选里，
+                        -- apply_manual_order 会把它排到当前级别首位，不会重复
+                        if not seen[text] and shapes.match(flow, text, shape) then
+                            seen[text] = true
+                            local cand = Candidate("flow_order", cx.span_start,
+                                                   cx.span_end, text, "")
+                            cand.preedit = code_text
+                            if reached then
+                                injected_pre[#injected_pre + 1] = cand
+                            else
+                                injected_post[#injected_post + 1] = cand
+                            end
                         end
                     end
                 end

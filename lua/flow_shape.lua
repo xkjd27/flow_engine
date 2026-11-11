@@ -130,6 +130,21 @@ local function set_segment_text(ctx, seg, text)
     ctx.input = ctx.input   -- 触发重画
 end
 
+-- 音码削减的边界（见 flow_codes.sound_ok）：多字词只能待在自己的音码下。
+-- 词不在这个音码下只有一种可能：它是被「补全」注入的（次简 / 自造词 / 旧版
+-- 声笔调频留下的 pin）—— 这时按 - / = 会把它 pin 到更短的码上，单键、双键
+-- 就会冒出不该出现在这个权重的词。直接吞掉，不写库。
+local function sound_ok(flow, cand, input)
+    if codes.sound_ok(flow, cand.text, input) then
+        return true
+    end
+    if log and log.warning then
+        log.warning("flow_shape: 「" .. tostring(cand.text) .. "」不属于码 "
+                    .. tostring(input) .. "（声笔 / 补全候选），不参与调码")
+    end
+    return false
+end
+
 -- `-` 降档（上调）：把候选 pin 到比**当前输入**更短一级的形码，
 --   不管它原来 pin 在哪个级别（调码跟着输入走，不跟 pin 走，否则
 --   用户打长码按 - 会跳到 pin 级别，输入没有反馈）；
@@ -143,6 +158,9 @@ local function promote(flow, ctx)
     end
     local shape = get_shape(ctx)
     local input = ctx.input
+    if not sound_ok(flow, cand, input) then
+        return
+    end
     local level = order.pin_level(flow, input, cand.text)
     if flow_env.is_shape_input(flow, input) then
         -- 纯笔码：码即完整形码，没有更短的级别；把候选提到本级首位
@@ -182,6 +200,9 @@ local function lower_or_extend(flow, ctx)
     end
     local shape = get_shape(ctx)
     local input = ctx.input
+    if not sound_ok(flow, cand, input) then
+        return
+    end
     local key = input .. "|" .. shape
     local level = order.pin_level(flow, input, cand.text)
     if flow_env.is_shape_input(flow, input) then
@@ -228,7 +249,8 @@ local function lower_or_extend(flow, ctx)
     if seg and seg.selected_index == 0 then
         local second = seg:get_candidate_at(1)
         if second and second.text and second.text ~= "" and
-                order.pinned(flow, second.text) then
+                order.pinned(flow, second.text) and
+                codes.sound_ok(flow, second.text, input) then
             order.remove_pin(flow, second.text)
             order.insert(flow, key, second.text, 1)
         end
